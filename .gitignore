@@ -6,3 +6,7 @@
 *.rar
 training/
 output/
+
+# Large model exports
+rknn-llm/examples/multimodal_model_demo/export/
+rknn-llm/examples/multimodal_model_demo/deploy/3rdparty/
