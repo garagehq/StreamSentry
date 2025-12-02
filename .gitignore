@@ -5,3 +5,4 @@
 *.rkllm
 *.rar
 training/
+output/
