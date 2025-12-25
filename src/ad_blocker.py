@@ -320,6 +320,42 @@ class DRMAdBlocker:
             logger.error(f"[DRMAdBlocker] Failed to start pipeline: {e}")
             return False
 
+    def start_no_signal_mode(self):
+        """Start the pipeline in no-signal mode (blocking display only).
+
+        Used when no HDMI input is detected at startup. Starts the pipeline
+        but immediately switches to blocking input with "NO HDMI INPUT" message.
+        The video input will be unused/erroring but that's fine since we
+        use the blocking input exclusively.
+        """
+        if not self.pipeline:
+            logger.error("[DRMAdBlocker] No pipeline to start")
+            return False
+
+        try:
+            # Switch to blocking input BEFORE starting so video errors don't matter
+            if self.selector and self.blocking_pad:
+                self.selector.set_property('active-pad', self.blocking_pad)
+
+            # Set the no-signal text
+            if self.textoverlay:
+                text = self._get_blocking_text('no_hdmi_device')
+                self.textoverlay.set_property('text', text)
+
+            ret = self.pipeline.set_state(Gst.State.PLAYING)
+            if ret == Gst.StateChangeReturn.FAILURE:
+                logger.error("[DRMAdBlocker] Failed to start pipeline in no-signal mode")
+                return False
+
+            self.is_visible = True
+            self.current_source = 'no_hdmi_device'
+            logger.info("[DRMAdBlocker] Pipeline started in no-signal mode (showing NO HDMI INPUT)")
+            return True
+
+        except Exception as e:
+            logger.error(f"[DRMAdBlocker] Failed to start pipeline in no-signal mode: {e}")
+            return False
+
     def _on_error(self, bus, message):
         """Handle GStreamer pipeline errors."""
         err, debug = message.parse_error()
@@ -360,6 +396,14 @@ class DRMAdBlocker:
                 "NO SIGNAL\n\n"
                 "HDMI input disconnected\n\n"
                 "Waiting for signal..."
+            )
+
+        # Special case: No HDMI device at startup
+        if source == 'no_hdmi_device':
+            return (
+                "NO HDMI INPUT\n\n"
+                "No HDMI input recognized\n\n"
+                "Waiting for HDMI signal..."
             )
 
         # Header based on detection source

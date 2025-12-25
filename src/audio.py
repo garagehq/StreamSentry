@@ -56,8 +56,8 @@ class AudioPassthrough:
         self._stop_watchdog = threading.Event()
         self._last_buffer_time = 0
         self._restart_count = 0
-        self._watchdog_interval = 5.0  # Check every 5 seconds
-        self._stall_threshold = 10.0  # Consider stalled if no buffer for 10s
+        self._watchdog_interval = 3.0  # Check every 3 seconds
+        self._stall_threshold = 6.0  # Consider stalled if no buffer for 6s
 
         # Exponential backoff for restarts (no max limit - always try to recover)
         self._base_restart_delay = 1.0  # Start with 1 second delay

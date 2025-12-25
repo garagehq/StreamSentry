@@ -174,6 +174,7 @@ Hay que aprovechar el tiempo.
 ```
 stream-sentry/
 ├── stream_sentry.py      # Main entry point
+├── stream_sentry.spec    # PyInstaller build spec
 ├── src/
 │   ├── ocr.py            # PaddleOCR on RKNN NPU
 │   ├── vlm.py            # Qwen3-VL-2B on Axera NPU
@@ -230,6 +231,8 @@ pip3 install pyclipper shapely numpy opencv-python pexpect PyGObject
 ## Troubleshooting
 
 **No HDMI signal:**
+When started without HDMI input, Stream Sentry displays "NO HDMI INPUT" on screen
+and waits for user to connect a source. To check signal manually:
 ```bash
 v4l2-ctl -d /dev/video0 --query-dv-timings
 ```
@@ -341,9 +344,28 @@ Stream Sentry includes a unified health monitor that runs in the background:
 - Configurable via `--max-screenshots`
 
 **Audio Error Recovery:**
+- Watchdog checks every 3 seconds, restarts if stalled for 6+ seconds
 - Exponential backoff for restart attempts (1s → 2s → 4s → ... → 60s max)
 - No maximum restart limit - always tries to recover
 - Backoff resets after 5 seconds of sustained audio flow
+
+## Building Executable
+
+Stream Sentry can be compiled into a standalone executable using PyInstaller:
+
+```bash
+# Install PyInstaller
+pip3 install pyinstaller
+
+# Build executable
+pyinstaller stream_sentry.spec
+
+# Output will be in dist/stream_sentry
+```
+
+**Note:** The executable still requires external model files at runtime:
+- PaddleOCR models in standard location
+- VLM models in `/home/radxa/axera_models/Qwen3-VL-2B/`
 
 ## License
 

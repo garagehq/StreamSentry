@@ -908,8 +908,45 @@ class StreamSentry:
         # Check signal
         signal_info = self.check_hdmi_signal()
         if not signal_info:
-            logger.error("No HDMI signal detected")
-            return False
+            logger.warning("No HDMI signal detected - starting in no-signal mode")
+            # Start display in no-signal mode to show "NO HDMI INPUT"
+            if self.ad_blocker:
+                if self.ad_blocker.start_no_signal_mode():
+                    logger.info("Display showing NO HDMI INPUT message - waiting for HDMI...")
+                    # Poll for HDMI signal every 2 seconds
+                    self.running = True
+                    try:
+                        while self.running:
+                            time.sleep(2)
+                            signal_info = self.check_hdmi_signal()
+                            if signal_info:
+                                width, height, fps = signal_info
+                                logger.info(f"HDMI signal detected: {width}x{height} @ {fps}fps - switching to normal mode")
+                                # Stop no-signal display and transition to normal operation
+                                self.ad_blocker.destroy()
+                                # Reinitialize ad_blocker for normal operation
+                                self.ad_blocker = AdBlocker(
+                                    connector_id=self.config.drm_connector_id,
+                                    plane_id=self.config.drm_plane_id,
+                                    stream_sentry=self,
+                                    ustreamer_port=self.config.ustreamer_port
+                                )
+                                if self.audio:
+                                    self.ad_blocker.set_audio(self.audio)
+                                break
+                    except KeyboardInterrupt:
+                        self.stop()
+                        return True
+
+                    if not self.running:
+                        self.stop()
+                        return True
+                else:
+                    logger.error("Failed to start no-signal display")
+                    return False
+            else:
+                logger.error("No ad_blocker available for no-signal display")
+                return False
 
         width, height, fps = signal_info
         logger.info(f"HDMI signal: {width}x{height} @ {fps}fps")

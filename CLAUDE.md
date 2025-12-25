@@ -66,6 +66,7 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | File | Purpose |
 |------|---------|
 | `stream_sentry.py` | Main entry point - orchestrates everything |
+| `stream_sentry.spec` | PyInstaller spec for building executable |
 | `src/ad_blocker.py` | GStreamer video pipeline with input-selector, Spanish vocab |
 | `src/audio.py` | GStreamer audio passthrough with mute control |
 | `src/ocr.py` | PaddleOCR on RKNN NPU, keyword detection |
@@ -143,7 +144,7 @@ stalls when the HDMI source has no audio (between songs, during video silence, e
 **Error Recovery:**
 - GStreamer bus monitors for pipeline errors and EOS
 - Buffer probe tracks audio flow (detects stalls)
-- Watchdog thread checks every 5s, restarts if no buffer for 10s
+- Watchdog thread checks every 3s, restarts if no buffer for 6s
 - Exponential backoff for restarts (1s → 2s → 4s → ... → 60s max)
 - No maximum restart limit - always tries to recover
 - Backoff resets after 5 seconds of sustained audio flow
@@ -288,6 +289,7 @@ The health monitor (`src/health.py`) runs in a background thread and checks:
 | Subsystem | Check | Recovery |
 |-----------|-------|----------|
 | HDMI signal | v4l2-ctl --query-dv-timings | Show "NO SIGNAL" overlay, mute audio |
+| No HDMI at startup | check_hdmi_signal() | Show "NO HDMI INPUT" and wait |
 | ustreamer | HTTP HEAD to :9090/snapshot | Restart ustreamer process |
 | Output FPS | GStreamer pad probe | Log warning if < 25fps |
 | VLM | Consecutive timeouts < 5 | Degrade to OCR-only, retry VLM after 30s |
@@ -349,3 +351,17 @@ The service:
 - ustreamer quality set to 75% to reduce CPU load
 - FPS tracked via GStreamer identity element with pad probe
 - Startup cleanup removes stale frame files and kills orphaned processes
+
+## Building Executable
+
+```bash
+# Install PyInstaller
+pip3 install pyinstaller
+
+# Build standalone executable
+pyinstaller stream_sentry.spec
+
+# Output: dist/stream_sentry
+```
+
+Note: Models are external and must be present at runtime.
