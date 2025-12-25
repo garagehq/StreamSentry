@@ -80,7 +80,22 @@ for handler in root_logger.handlers[:]:
     root_logger.removeHandler(handler)
 
 # Add file handler with rotation
-log_file = Path(__file__).parent / 'stream_sentry.log'
+# Use /tmp/stream_sentry.log - sudoers allows passwordless management
+log_file = Path('/tmp/stream_sentry.log')
+try:
+    if log_file.exists():
+        try:
+            with open(log_file, 'a'):
+                pass
+        except PermissionError:
+            # Use sudo to fix permissions (sudoers.d/stream-sentry allows this)
+            import subprocess
+            subprocess.run(['sudo', 'rm', '-f', str(log_file)], capture_output=True)
+    if not log_file.exists():
+        log_file.touch(mode=0o666)
+except Exception:
+    pass
+
 file_handler = logging.handlers.RotatingFileHandler(
     log_file,
     maxBytes=5*1024*1024,  # 5MB
@@ -241,7 +256,7 @@ class StreamSentry:
 
         # Weighted detection parameters
         self.OCR_TRUST_WINDOW = 5.0
-        self.VLM_ALONE_THRESHOLD = 3
+        self.VLM_ALONE_THRESHOLD = 5  # Require 5 consecutive VLM detections to trigger alone
         self.MIN_BLOCKING_DURATION = 3.0
         self.OCR_STOP_THRESHOLD = 3
         self.VLM_STOP_THRESHOLD = 2
@@ -395,7 +410,7 @@ class StreamSentry:
             ustreamer_cmd = [
                 'ustreamer',
                 f'--device={self.device}',
-                '--format=BGR24',
+                # Don't specify format - let device auto-configure
                 f'--port={port}',
                 '--quality=75',
                 '--workers=8',
@@ -535,10 +550,10 @@ class StreamSentry:
 
         # Start ustreamer (color correction done via GStreamer videobalance)
         # Note: HDMI-RX device doesn't support V4L2 image controls
+        # Don't specify format - let device auto-configure for compatibility
         ustreamer_cmd = [
             'ustreamer',
             f'--device={self.device}',
-            '--format=BGR24',
             f'--port={port}',
             '--quality=75',
             '--workers=8',
