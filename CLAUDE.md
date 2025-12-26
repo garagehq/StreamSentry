@@ -87,7 +87,7 @@ python3 stream_sentry.py
 **Command-line options:**
 ```bash
 --device /dev/video1      # Custom capture device
---ocr-timeout 1.0         # OCR timeout in seconds (default: 1.0)
+--ocr-timeout 1.5         # OCR timeout in seconds (default: 1.5)
 --max-screenshots 100     # Keep N recent screenshots (default: 50, 0=unlimited)
 --check-signal            # Just check HDMI signal and exit
 --connector-id 215        # DRM connector ID (default: 215)
@@ -171,7 +171,7 @@ v4l2-ctl -d /dev/video0 --get-ctrl audio_present
 
 **VLM (Secondary - Contextual Trust):**
 - If OCR detected within 5s (`OCR_TRUST_WINDOW`): VLM is trusted
-- If no recent OCR: needs 3+ consecutive detections (`VLM_ALONE_THRESHOLD`)
+- If no recent OCR: needs 5 consecutive detections (`VLM_ALONE_THRESHOLD`)
 - Needs 2 consecutive no-ads to stop (`VLM_STOP_THRESHOLD`)
 
 **Anti-flicker:**
@@ -184,7 +184,7 @@ When ads are detected, the screen shows:
 - **Header**: `BLOCKING (OCR)`, `BLOCKING (VLM)`, or `BLOCKING (OCR+VLM)`
 - **Spanish vocabulary**: Random intermediate-level word with translation
 - **Example sentence**: Shows the word in context
-- **Rotation**: New vocabulary every 8-12 seconds
+- **Rotation**: New vocabulary every 11-15 seconds
 
 Example:
 ```
@@ -198,15 +198,20 @@ Hay que aprovechar el tiempo.
 
 ## Spanish Vocabulary
 
-50 intermediate-level words including:
-- **Verbs**: aprovechar, lograr, desarrollar, destacar, enfrentar...
-- **Adjectives**: disponible, imprescindible, agotado, capaz...
-- **Nouns**: desarrollo, comportamiento, conocimiento, ambiente...
-- **Expressions**: sin embargo, a pesar de, de repente, hoy en dia...
+120+ intermediate-level words and phrases including:
+- **Common verbs**: aprovechar, lograr, desarrollar, destacar, enfrentar...
+- **Reflexive verbs**: comprometerse, enterarse, arrepentirse, darse cuenta...
+- **Adjectives**: disponible, imprescindible, agotado, capaz, dispuesto...
+- **Nouns**: desarrollo, comportamiento, conocimiento, ambiente, herramienta...
+- **Expressions**: sin embargo, a pesar de, de repente, hoy en dia, cada vez mas...
+- **False friends**: embarazada, exito, sensible, libreria, asistir...
+- **Subjunctive triggers**: es importante que, espero que, dudo que, ojala...
+- **Time expressions**: hace poco, dentro de poco, a la larga, de antemano...
 
 ## Housekeeping
 
-**Log Rotation:**
+**Log File:**
+- Location: `/tmp/stream_sentry.log`
 - Max 5MB per log file
 - Keeps 3 backup files (stream_sentry.log.1, .2, .3)
 

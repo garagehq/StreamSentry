@@ -55,7 +55,7 @@ Stream Sentry captures video from HDMI-RX, displays it via GStreamer kmssink at 
 ## Quick Start
 
 ```bash
-cd /home/radxa/rknn-llm/examples/multimodal_model_demo/deploy/stream-sentry
+cd /home/radxa/StreamSentry
 
 # Install dependencies (first time only)
 sudo apt install -y imagemagick ffmpeg curl
@@ -80,7 +80,7 @@ python3 stream_sentry.py --check-signal
 |--------|-------------|
 | `--device PATH` | Video device (default: /dev/video0) |
 | `--screenshot-dir DIR` | Screenshot directory (default: screenshots) |
-| `--ocr-timeout SEC` | Skip OCR frames taking longer than this (default: 1.0s) |
+| `--ocr-timeout SEC` | Skip OCR frames taking longer than this (default: 1.5s) |
 | `--max-screenshots N` | Keep only N recent screenshots (default: 50, 0=unlimited) |
 | `--check-signal` | Check HDMI signal and exit |
 | `--connector-id N` | DRM connector ID (default: 215) |
@@ -108,7 +108,7 @@ python3 stream_sentry.py --check-signal
 
 **VLM is SECONDARY (contextual trust):**
 - If OCR detected within last 5s: VLM is trusted
-- If no recent OCR: VLM needs 3+ consecutive detections to trigger alone
+- If no recent OCR: VLM needs 5 consecutive detections to trigger alone
 - Needs 2 consecutive no-ads to stop
 
 **Anti-flicker protection:**
@@ -122,7 +122,7 @@ When ads are detected, the screen shows:
 - **Spanish word**: Random intermediate-level vocabulary
 - **Translation**: English meaning
 - **Example**: Sentence using the word
-- **Rotation**: New vocabulary every 8-12 seconds
+- **Rotation**: New vocabulary every 11-15 seconds
 
 Example display:
 ```
@@ -136,11 +136,15 @@ Hay que aprovechar el tiempo.
 
 ## Spanish Vocabulary
 
-50 intermediate-level words including:
-- **Verbs**: aprovechar, lograr, desarrollar, destacar, enfrentar...
-- **Adjectives**: disponible, imprescindible, agotado, capaz...
-- **Nouns**: desarrollo, comportamiento, conocimiento, ambiente...
-- **Expressions**: sin embargo, a pesar de, de repente, hoy en dia...
+120+ intermediate-level words and phrases including:
+- **Common verbs**: aprovechar, lograr, desarrollar, destacar, enfrentar...
+- **Reflexive verbs**: comprometerse, enterarse, arrepentirse, darse cuenta...
+- **Adjectives**: disponible, imprescindible, agotado, capaz, dispuesto...
+- **Nouns**: desarrollo, comportamiento, conocimiento, ambiente, herramienta...
+- **Expressions**: sin embargo, a pesar de, de repente, hoy en dia, cada vez mas...
+- **False friends**: embarazada, exito, sensible, libreria, asistir...
+- **Subjunctive triggers**: es importante que, espero que, dudo que, ojala...
+- **Time expressions**: hace poco, dentro de poco, a la larga, de antemano...
 
 ## Ad Keywords Detected
 
@@ -189,7 +193,6 @@ stream-sentry/
 │   └── paddleocr/        # RKNN models (or symlink)
 ├── screenshots/
 │   └── ocr/              # Ad detection screenshots (auto-truncated)
-├── stream_sentry.log     # Log file (rotated)
 ├── README.md             # This file
 ├── CLAUDE.md             # Development notes
 └── AUDIO.md              # Audio implementation details
@@ -335,7 +338,8 @@ Stream Sentry includes a unified health monitor that runs in the background:
 
 ## Housekeeping
 
-**Log Rotation:**
+**Log File:**
+- Location: `/tmp/stream_sentry.log`
 - Max 5MB per log file
 - Keeps 3 backup files (stream_sentry.log.1, .2, .3)
 
