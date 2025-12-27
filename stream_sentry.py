@@ -246,7 +246,15 @@ class UstreamerCapture:
     def __init__(self, port=9090):
         self.port = port
         self.snapshot_url = f'http://localhost:{port}/snapshot'
-        self.screenshot_path = '/dev/shm/stream_sentry_frame.jpg'
+        # Use PID-based filename to avoid conflicts with root-owned stale files
+        self.screenshot_path = f'/dev/shm/stream_sentry_frame_{os.getpid()}.jpg'
+
+    def cleanup(self):
+        """Remove the temporary screenshot file."""
+        try:
+            Path(self.screenshot_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def capture(self):
         """Capture frame via HTTP snapshot and return as numpy array."""
@@ -749,13 +757,15 @@ class StreamSentry:
         # Clean up any stale resources from previous runs
         subprocess.run(['fuser', '-k', f'{port}/tcp'],
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        # Remove stale frame files that might be owned by root
-        for f in ['/dev/shm/stream_sentry_frame.jpg', '/dev/shm/stream_sentry_vlm_frame.jpg']:
-            try:
-                Path(f).unlink(missing_ok=True)
-            except PermissionError:
-                # File owned by root, try to work around it
-                subprocess.run(['sudo', 'rm', '-f', f], capture_output=True)
+        # Remove stale frame files that might be owned by root (use glob for PID-based names)
+        stale_patterns = ['stream_sentry_frame*.jpg', 'stream_sentry_vlm_frame*.jpg']
+        for pattern in stale_patterns:
+            for f in Path('/dev/shm').glob(pattern):
+                try:
+                    f.unlink(missing_ok=True)
+                except PermissionError:
+                    # File owned by root, use sudo fallback
+                    subprocess.run(['sudo', 'rm', '-f', str(f)], capture_output=True)
         time.sleep(0.5)
 
         self.ustreamer_process = subprocess.Popen(
@@ -1208,6 +1218,10 @@ class StreamSentry:
         # Stop health monitor first
         if self.health_monitor:
             self.health_monitor.stop()
+
+        # Clean up frame capture temp file
+        if self.frame_capture:
+            self.frame_capture.cleanup()
 
         if self.ustreamer_process:
             self.ustreamer_process.terminate()
