@@ -123,9 +123,19 @@ We use a patched version of ustreamer from `garagehq/ustreamer` that adds:
 - **YCbCr-direct encoding** (no RGB conversion overhead)
 
 **Why patched ustreamer?**
-The stock PiKVM ustreamer doesn't support NV12 format, which is the only format
+The stock PiKVM ustreamer doesn't support NV12 format, which is one of the formats
 the RK3588 HDMI-RX driver outputs. Our fork adds NV12→JPEG encoding with
 performance optimizations that achieve ~60fps on 4K input.
+
+**Dynamic Format Detection:**
+StreamSentry automatically probes the V4L2 device to detect its current format
+and resolution. Supported formats:
+- **NV12** - RK3588 HDMI-RX native (uses patched encoder with YCbCr optimization)
+- **BGR24/BGR3** - Some HDMI devices (uses standard ustreamer BGR24 support)
+- **YUYV/UYVY** - Webcam-style devices
+- **MJPEG** - Pre-compressed JPEG sources
+
+This allows seamless switching between HDMI sources with different output formats.
 
 **Performance comparison (4K HDMI input):**
 

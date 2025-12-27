@@ -202,12 +202,27 @@ class DRMAdBlocker:
         # Pipeline health tracking
         self._pipeline_errors = 0
         self._last_error_time = 0
+        self._pipeline_restarting = False
+        self._restart_lock = threading.Lock()
 
         # FPS tracking
         self._frame_count = 0
         self._fps_start_time = time.time()
         self._current_fps = 0.0
         self._fps_lock = threading.Lock()
+
+        # Video buffer watchdog (like audio has)
+        self._last_buffer_time = 0
+        self._watchdog_thread = None
+        self._stop_watchdog = threading.Event()
+        self._watchdog_interval = 3.0  # Check every 3 seconds
+        self._stall_threshold = 10.0   # 10 seconds without buffer = stall
+        self._restart_count = 0
+        self._last_restart_time = 0
+        self._consecutive_failures = 0
+        self._base_restart_delay = 1.0
+        self._max_restart_delay = 30.0
+        self._success_reset_time = 10.0  # Reset backoff after 10s of success
 
         # Text rotation for Spanish vocabulary
         self._rotation_thread = None
@@ -265,6 +280,7 @@ class DRMAdBlocker:
             self.bus = self.pipeline.get_bus()
             self.bus.add_signal_watch()
             self.bus.connect('message::error', self._on_error)
+            self.bus.connect('message::eos', self._on_eos)
             self.bus.connect('message::warning', self._on_warning)
 
             # Set up FPS probe
@@ -283,9 +299,19 @@ class DRMAdBlocker:
 
     def _fps_probe_callback(self, pad, info, user_data):
         """Callback for counting frames passing through the pipeline."""
+        current_time = time.time()
+
+        # Track last buffer time for watchdog
+        self._last_buffer_time = current_time
+
+        # Reset consecutive failures after sustained success
+        if self._consecutive_failures > 0:
+            if current_time - self._last_restart_time > self._success_reset_time:
+                self._consecutive_failures = 0
+                logger.debug("[DRMAdBlocker] Buffer flow restored, reset backoff")
+
         with self._fps_lock:
             self._frame_count += 1
-            current_time = time.time()
             elapsed = current_time - self._fps_start_time
 
             # Calculate FPS every second
@@ -314,11 +340,145 @@ class DRMAdBlocker:
                 return False
 
             logger.info("[DRMAdBlocker] Pipeline started (video active)")
+
+            # Start watchdog thread
+            self._start_watchdog()
+
             return True
 
         except Exception as e:
             logger.error(f"[DRMAdBlocker] Failed to start pipeline: {e}")
             return False
+
+    def _start_watchdog(self):
+        """Start the video buffer watchdog thread."""
+        self._stop_watchdog.clear()
+        self._last_buffer_time = time.time()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop,
+            daemon=True,
+            name="VideoWatchdog"
+        )
+        self._watchdog_thread.start()
+        logger.debug("[DRMAdBlocker] Watchdog started")
+
+    def _stop_watchdog_thread(self):
+        """Stop the watchdog thread."""
+        self._stop_watchdog.set()
+        if self._watchdog_thread:
+            self._watchdog_thread.join(timeout=2.0)
+            self._watchdog_thread = None
+
+    def _watchdog_loop(self):
+        """Watchdog thread to detect video pipeline stalls."""
+        logger.debug("[DRMAdBlocker] Watchdog loop started")
+
+        while not self._stop_watchdog.is_set():
+            self._stop_watchdog.wait(self._watchdog_interval)
+
+            if self._stop_watchdog.is_set():
+                break
+
+            # Skip check if we're showing blocking screen (using videotestsrc, not souphttpsrc)
+            if self.is_visible:
+                continue
+
+            # Skip check if pipeline is restarting
+            if self._pipeline_restarting:
+                continue
+
+            # Check if buffers are flowing
+            if self._last_buffer_time > 0:
+                time_since_buffer = time.time() - self._last_buffer_time
+                if time_since_buffer > self._stall_threshold:
+                    logger.warning(f"[DRMAdBlocker] Video pipeline stalled ({time_since_buffer:.1f}s without buffer)")
+                    self._restart_pipeline()
+
+            # Check pipeline state
+            if self.pipeline and not self.is_visible:
+                try:
+                    state_ret, state, pending = self.pipeline.get_state(0)
+                    if state not in (Gst.State.PLAYING, Gst.State.PAUSED):
+                        logger.warning(f"[DRMAdBlocker] Pipeline not in PLAYING state: {state.value_nick}")
+                        self._restart_pipeline()
+                except Exception as e:
+                    logger.debug(f"[DRMAdBlocker] Error checking pipeline state: {e}")
+
+        logger.debug("[DRMAdBlocker] Watchdog loop stopped")
+
+    def _restart_pipeline(self):
+        """Restart the video pipeline after a stall with exponential backoff."""
+        with self._restart_lock:
+            if self._pipeline_restarting:
+                return
+
+            self._pipeline_restarting = True
+
+        try:
+            self._restart_count += 1
+            self._consecutive_failures += 1
+
+            # Calculate backoff delay: 1s, 2s, 4s, 8s, ... up to 30s
+            delay = min(
+                self._base_restart_delay * (2 ** (self._consecutive_failures - 1)),
+                self._max_restart_delay
+            )
+
+            logger.warning(
+                f"[DRMAdBlocker] Restarting pipeline (attempt {self._restart_count}, "
+                f"delay {delay:.1f}s, {self._consecutive_failures} consecutive failures)"
+            )
+
+            # Preserve current state
+            was_visible = self.is_visible
+            current_source = self.current_source
+
+            # Stop current pipeline
+            if self.pipeline:
+                try:
+                    if self.bus:
+                        self.bus.remove_signal_watch()
+                        self.bus = None
+                    self.pipeline.set_state(Gst.State.NULL)
+                except Exception as e:
+                    logger.debug(f"[DRMAdBlocker] Error stopping old pipeline: {e}")
+                self.pipeline = None
+                self.selector = None
+                self.video_pad = None
+                self.blocking_pad = None
+                self.textoverlay = None
+
+            # Wait with exponential backoff
+            time.sleep(delay)
+
+            # Recreate pipeline
+            self._init_pipeline()
+
+            if self.pipeline:
+                # Restore state
+                if was_visible and self.selector and self.blocking_pad:
+                    self.selector.set_property('active-pad', self.blocking_pad)
+                    if self.textoverlay and current_source:
+                        text = self._get_blocking_text(current_source)
+                        self.textoverlay.set_property('text', text)
+
+                ret = self.pipeline.set_state(Gst.State.PLAYING)
+                if ret != Gst.StateChangeReturn.FAILURE:
+                    logger.info("[DRMAdBlocker] Pipeline restarted successfully")
+                    self._last_buffer_time = time.time()
+                    self._last_restart_time = time.time()
+                else:
+                    logger.error("[DRMAdBlocker] Pipeline restart failed - state change returned FAILURE")
+            else:
+                logger.error("[DRMAdBlocker] Pipeline restart failed - could not create pipeline")
+
+        finally:
+            self._pipeline_restarting = False
+
+    def restart(self):
+        """Public method to restart the video pipeline (called by stream_sentry)."""
+        logger.info("[DRMAdBlocker] External restart requested")
+        threading.Thread(target=self._restart_pipeline, daemon=True).start()
 
     def start_no_signal_mode(self):
         """Start the pipeline in no-signal mode (blocking display only).
@@ -365,10 +525,19 @@ class DRMAdBlocker:
         logger.error(f"[DRMAdBlocker] Pipeline error: {err.message}")
         logger.debug(f"[DRMAdBlocker] Debug info: {debug}")
 
-        # Notify health monitor if available
-        if self.stream_sentry and hasattr(self.stream_sentry, 'health_monitor'):
-            # The health monitor will handle recovery
-            pass
+        # Check for recoverable errors (connection errors from souphttpsrc)
+        error_msg = err.message.lower() if err.message else ""
+        if any(keyword in error_msg for keyword in ['connection', 'refused', 'timeout', 'socket', 'http', 'network']):
+            logger.warning("[DRMAdBlocker] HTTP connection error detected - triggering restart")
+            # Don't restart immediately if we're already in blocking mode
+            if not self.is_visible:
+                threading.Thread(target=self._restart_pipeline, daemon=True).start()
+
+    def _on_eos(self, bus, message):
+        """Handle end-of-stream (shouldn't happen for live source)."""
+        logger.warning("[DRMAdBlocker] Unexpected EOS received - triggering restart")
+        if not self.is_visible:
+            threading.Thread(target=self._restart_pipeline, daemon=True).start()
 
     def _on_warning(self, bus, message):
         """Handle GStreamer pipeline warnings."""
@@ -557,6 +726,9 @@ class DRMAdBlocker:
     def destroy(self):
         """Clean up the pipeline."""
         with self._lock:
+            # Stop watchdog thread
+            self._stop_watchdog_thread()
+
             # Stop rotation thread
             self._stop_rotation_thread()
 

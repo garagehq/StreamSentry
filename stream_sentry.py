@@ -408,6 +408,7 @@ class StreamSentry:
                 self.health_monitor.on_hdmi_lost(self._on_hdmi_lost)
                 self.health_monitor.on_hdmi_restored(self._on_hdmi_restored)
                 self.health_monitor.on_ustreamer_stall(self._restart_ustreamer)
+                self.health_monitor.on_video_pipeline_stall(self._on_video_pipeline_stall)
                 self.health_monitor.on_vlm_failure(self._handle_vlm_failure)
                 self.health_monitor.on_memory_critical(self._handle_memory_critical)
                 logger.info("Health monitor initialized")
@@ -447,13 +448,30 @@ class StreamSentry:
     def _on_hdmi_restored(self):
         """Handle HDMI signal restoration."""
         logger.info("[Recovery] HDMI signal restored - restarting capture")
-        # Hide blocking screen
+        # Restart ustreamer first to pick up new signal
+        self._restart_ustreamer()
+
+        # Wait for ustreamer to be fully ready before restarting video pipeline
+        time.sleep(1)
+
+        # Restart video pipeline to reconnect to ustreamer
         if self.ad_blocker:
+            logger.info("[Recovery] Restarting video pipeline...")
+            self.ad_blocker.restart()
+
+        # Hide blocking screen and restore video after restart
+        # (The pipeline restart will handle this, but ensure it's done)
+        time.sleep(2)
+        if self.ad_blocker and not self.ad_detected:
             self.ad_blocker.hide()
         if self.audio:
             self.audio.unmute()
-        # Restart ustreamer to pick up new signal
-        self._restart_ustreamer()
+
+    def _on_video_pipeline_stall(self):
+        """Handle video pipeline stall detected by health monitor."""
+        logger.warning("[Recovery] Video pipeline stall detected - restarting pipeline")
+        if self.ad_blocker:
+            self.ad_blocker.restart()
 
     def _restart_ustreamer(self):
         """Restart ustreamer process."""
@@ -467,10 +485,11 @@ class StreamSentry:
                 except:
                     self.ustreamer_process.kill()
 
-            subprocess.run(['pkill', '-9', 'ustreamer'], capture_output=True)
+            subprocess.run(['pkill', '-9', 'ustreamer'],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             # Also kill anything on the port
             subprocess.run(['fuser', '-k', f'{self.config.ustreamer_port}/tcp'],
-                          capture_output=True, stderr=subprocess.DEVNULL)
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(1)
 
             # Re-probe the device in case format changed
@@ -504,6 +523,10 @@ class StreamSentry:
 
             if self.ustreamer_process.poll() is None:
                 logger.info("[Recovery] ustreamer restarted successfully")
+                # Also restart video pipeline to reconnect to new ustreamer
+                if self.ad_blocker:
+                    logger.info("[Recovery] Also restarting video pipeline...")
+                    self.ad_blocker.restart()
             else:
                 logger.error("[Recovery] ustreamer failed to restart")
 

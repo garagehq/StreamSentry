@@ -71,6 +71,7 @@ class HealthMonitor:
         self._on_hdmi_lost: Optional[Callable] = None
         self._on_hdmi_restored: Optional[Callable] = None
         self._on_ustreamer_stall: Optional[Callable] = None
+        self._on_video_pipeline_stall: Optional[Callable] = None
         self._on_vlm_failure: Optional[Callable] = None
         self._on_memory_critical: Optional[Callable] = None
 
@@ -178,6 +179,25 @@ class HealthMonitor:
                 logger.warning("[HealthMonitor] ustreamer not responding to HTTP requests")
                 if self._on_ustreamer_stall:
                     self._on_ustreamer_stall()
+                # Also trigger video pipeline restart after ustreamer restart
+                if self._on_video_pipeline_stall:
+                    # Give ustreamer time to restart before triggering video restart
+                    import threading
+                    def delayed_video_restart():
+                        import time
+                        time.sleep(3)
+                        if self._on_video_pipeline_stall:
+                            self._on_video_pipeline_stall()
+                    threading.Thread(target=delayed_video_restart, daemon=True).start()
+
+        # Video pipeline health check (FPS-based)
+        if uptime > self.startup_grace_period and status.hdmi_signal:
+            # If we have HDMI signal but FPS is 0 for a while, pipeline may be stuck
+            if status.output_fps == 0 and status.video_pipeline_ok:
+                # Pipeline thinks it's OK but no frames flowing
+                logger.warning("[HealthMonitor] Video pipeline has 0 FPS - may be stalled")
+                if self._on_video_pipeline_stall:
+                    self._on_video_pipeline_stall()
 
         # VLM health
         if status.vlm_consecutive_timeouts >= self.vlm_timeout_threshold:
@@ -353,6 +373,10 @@ class HealthMonitor:
     def on_ustreamer_stall(self, callback: Callable):
         """Set callback for ustreamer stall."""
         self._on_ustreamer_stall = callback
+
+    def on_video_pipeline_stall(self, callback: Callable):
+        """Set callback for video pipeline stall."""
+        self._on_video_pipeline_stall = callback
 
     def on_vlm_failure(self, callback: Callable):
         """Set callback for VLM failure."""
