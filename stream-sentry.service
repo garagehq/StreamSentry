@@ -8,34 +8,47 @@ Conflicts=gdm.service gdm3.service lightdm.service sddm.service
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/home/radxa/rknn-llm/examples/multimodal_model_demo/deploy/stream-sentry
+WorkingDirectory=/home/radxa/StreamSentry
 
 # Environment
 Environment=PYTHONUNBUFFERED=1
 Environment=OPENCV_LOG_LEVEL=ERROR
 
 # Pre-start: ensure clean state
+# Stop display managers (gdm3, etc.) to release DRM/KMS resources
+ExecStartPre=/bin/bash -c 'systemctl stop gdm3 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'systemctl stop gdm 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'systemctl stop lightdm 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'systemctl stop sddm 2>/dev/null || true'
+# Kill any lingering Xorg processes
+ExecStartPre=/bin/bash -c 'pkill -9 Xorg 2>/dev/null || true'
+# Clean up stale processes
 ExecStartPre=/bin/bash -c 'pkill -9 ustreamer 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'pkill -9 -f stream_sentry 2>/dev/null || true'
 ExecStartPre=/bin/bash -c 'fuser -k /dev/video0 2>/dev/null || true'
+# Clean up stale frame files
+ExecStartPre=/bin/bash -c 'rm -f /dev/shm/stream_sentry_frame*.jpg /dev/shm/stream_sentry_vlm_frame*.jpg 2>/dev/null || true'
+# Switch to VT1 and wait for cleanup
 ExecStartPre=/bin/bash -c 'chvt 1 2>/dev/null || true'
-ExecStartPre=/bin/sleep 1
+ExecStartPre=/bin/sleep 2
 
 # Main process
-ExecStart=/usr/bin/python3 /home/radxa/rknn-llm/examples/multimodal_model_demo/deploy/stream-sentry/stream_sentry.py
+ExecStart=/usr/bin/python3 /home/radxa/StreamSentry/stream_sentry.py
 
 # Graceful stop
 ExecStop=/bin/kill -TERM $MAINPID
 ExecStopPost=/bin/bash -c 'pkill -9 ustreamer 2>/dev/null || true'
+ExecStopPost=/bin/bash -c 'rm -f /dev/shm/stream_sentry_frame*.jpg /dev/shm/stream_sentry_vlm_frame*.jpg 2>/dev/null || true'
 
 # Restart policy
-Restart=always
+Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 # Logging
-StandardOutput=append:/home/radxa/rknn-llm/examples/multimodal_model_demo/deploy/stream-sentry/stream_sentry.log
-StandardError=append:/home/radxa/rknn-llm/examples/multimodal_model_demo/deploy/stream-sentry/stream_sentry.log
+StandardOutput=append:/tmp/stream_sentry.log
+StandardError=append:/tmp/stream_sentry.log
 
 # Resource limits
 Nice=-5

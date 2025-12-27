@@ -14,14 +14,14 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Stop any existing stream_sentry
-echo "[1/4] Stopping any existing stream_sentry..."
+echo "[1/3] Stopping any existing stream_sentry..."
 pkill -9 -f stream_sentry.py 2>/dev/null
 pkill -9 ustreamer 2>/dev/null
 fuser -k /dev/video0 2>/dev/null
 sleep 1
 
 # Stop X11/gdm3
-echo "[2/4] Stopping X11 (gdm3)..."
+echo "[2/3] Stopping X11 (gdm3)..."
 systemctl stop gdm3 2>/dev/null
 sleep 2
 
@@ -32,12 +32,8 @@ if pgrep -x Xorg > /dev/null; then
     sleep 1
 fi
 
-# Switch to correct VT for DRM output
-echo "[3/4] Switching to VT1..."
-chvt 1
-
 # Start stream_sentry
-echo "[4/4] Starting stream_sentry..."
+echo "[3/3] Starting stream_sentry..."
 cd "$SCRIPT_DIR"
 python3 stream_sentry.py > "$LOG_FILE" 2>&1 &
 PID=$!
