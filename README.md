@@ -96,7 +96,9 @@ python3 minus.py --check-signal
 |--------|-------|
 | Display framerate | **30fps** (video), 2-3fps (blocking overlay) |
 | ustreamer stream | **~60fps** (MPP hardware encoding at 4K) |
-| Ad blocking switch | **INSTANT** (~1 frame) |
+| Ad blocking switch | **1.5s animated transition** |
+| Preview window | **~4fps** (live ad preview in corner) |
+| Animation framerate | **~30fps** (smooth ease-in/ease-out) |
 | Snapshot capture | ~150ms (4K JPEG download) |
 | OCR latency | 250-400ms per frame (960x540 input) |
 | VLM latency | 1.3-1.5s per frame |
@@ -128,16 +130,31 @@ When ads are detected, the screen shows:
 - **Translation**: English meaning
 - **Example**: Sentence using the word
 - **Rotation**: New vocabulary every 11-15 seconds
+- **Ad Preview**: Live preview of blocked ad in bottom-right corner (~4fps)
+- **Debug Dashboard**: Stats in bottom-left (uptime, ads blocked, block time)
+
+**Smooth Transitions:**
+- **Start blocking**: 1.5s animation - ad shrinks from full-screen to corner preview
+- **End blocking**: 1.5s animation - preview grows to full-screen, then switches to video
+- Preview updates during animation for responsive feel
 
 Example display:
 ```
-BLOCKING (OCR)
-
-aprovechar
-= to take advantage of
-
-Hay que aprovechar el tiempo.
+┌─────────────────────────────────────────────────────────────────┐
+│                        BLOCKING (OCR)                           │
+│                                                                 │
+│                         aprovechar                              │
+│                    = to take advantage of                       │
+│                                                                 │
+│                 Hay que aprovechar el tiempo.                   │
+│                                                     ┌─────────┐ │
+│  Uptime: 2h 15m 30s                                 │   AD    │ │
+│  Ads blocked: 47                                    │ PREVIEW │ │
+│  Block time: 12m 45s                                └─────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+Both preview window and debug dashboard are toggleable via Web UI Settings.
 
 ## Spanish Vocabulary
 
@@ -369,6 +386,7 @@ Minus includes a mobile-friendly web UI for remote monitoring and control:
 - **Live video feed** - Real-time MJPEG stream from ustreamer
 - **Status display** - Blocking state, FPS, HDMI resolution, uptime
 - **Pause controls** - 1/2/5/10 minute presets to pause ad blocking
+- **Settings** - Toggle ad preview window and debug dashboard
 - **Detection history** - Recent OCR/VLM detections with timestamps
 - **Log viewer** - Collapsible log output for debugging
 

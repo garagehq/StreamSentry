@@ -116,8 +116,10 @@ This allows Minus to work with different displays without manual configuration.
 |--------|-------|
 | Display (video) | **30fps** (GStreamer kmssink, MJPEG → NV12 → plane 72) |
 | Display (blocking) | 2-3fps (videotestsrc + textoverlay) |
-| Ad blocking switch | **INSTANT** (input-selector, no restart) |
+| Ad blocking switch | **1.5s animation** (shrink/grow transition) |
 | Audio mute/unmute | **INSTANT** (volume element mute property) |
+| Preview window | **~4fps** (gdkpixbufoverlay, 20% of screen) |
+| Animation framerate | **~30fps** (smooth ease-in/ease-out) |
 | ustreamer MJPEG stream | **~60fps** (MPP hardware encoding at 4K) |
 | OCR latency | **100-200ms** capture + **250-400ms** inference |
 | VLM latency | 1.3-1.5s per frame |
@@ -265,16 +267,35 @@ When ads are detected, the screen shows:
 - **Spanish vocabulary**: Random intermediate-level word with translation
 - **Example sentence**: Shows the word in context
 - **Rotation**: New vocabulary every 11-15 seconds
+- **Ad Preview Window**: Live preview of the blocked ad in bottom-right corner (~4fps)
+- **Debug Dashboard**: Stats overlay in bottom-left corner (uptime, ads blocked, block time)
 
-Example:
+**Transition Animations (1.5s):**
+- **Start blocking**: Ad video shrinks from full-screen to corner preview (ease-out)
+- **End blocking**: Preview grows from corner to full-screen, then switches to video (ease-in)
+- Preview updates at ~4fps during animation for responsive feel
+
+Example display:
 ```
-BLOCKING (OCR)
-
-aprovechar
-= to take advantage of
-
-Hay que aprovechar el tiempo.
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│                        BLOCKING (OCR)                           │
+│                                                                 │
+│                         aprovechar                              │
+│                    = to take advantage of                       │
+│                                                                 │
+│                 Hay que aprovechar el tiempo.                   │
+│                                                                 │
+│                                                     ┌─────────┐ │
+│  Uptime: 2h 15m 30s                                 │ [AD     │ │
+│  Ads blocked: 47                                    │ PREVIEW]│ │
+│  Block time: 12m 45s                                └─────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+**Web UI Toggles:**
+- Ad Preview Window: toggleable via Settings (default: ON)
+- Debug Dashboard: toggleable via Settings (default: ON)
 
 ## Spanish Vocabulary
 
@@ -436,7 +457,7 @@ accessible via Tailscale from desktop or mobile devices.
 │  │ (ustreamer:9090)│  │  - Status (blocking, FPS, etc)   │  │
 │  │                 │  │  - Pause button (1/2/5/10 min)   │  │
 │  │   <img src=     │  │  - Recent detections             │  │
-│  │   /stream>      │  │  - Logs viewer                   │  │
+│  │   /stream>      │  │  - Settings (preview, debug)     │  │
 │  └─────────────────┘  └──────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
                               │ HTTP :8080
@@ -449,6 +470,12 @@ accessible via Tailscale from desktop or mobile devices.
 │  POST /api/resume   → Resume blocking immediately           │
 │  GET /api/detections→ Recent OCR/VLM detections             │
 │  GET /api/logs      → Last 100 log lines                    │
+│  GET /api/preview   → Get preview window state              │
+│  POST /api/preview/enable  → Enable ad preview window       │
+│  POST /api/preview/disable → Disable ad preview window      │
+│  GET /api/debug-overlay    → Get debug overlay state        │
+│  POST /api/debug-overlay/enable  → Enable debug dashboard   │
+│  POST /api/debug-overlay/disable → Disable debug dashboard  │
 │  GET /stream        → Proxy to ustreamer:9090/stream        │
 │  GET /snapshot      → Proxy to ustreamer:9090/snapshot      │
 └─────────────────────────────────────────────────────────────┘
