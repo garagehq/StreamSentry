@@ -30,7 +30,7 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
                               │                 │          ▼          │
                               │                 │  ┌───────────────┐  │
                               │                 │  │    kmssink    │  │
-                              │                 │  │  plane-id=72  │  │
+                              │                 │  │ (auto-detect) │  │
                               │                 │  └───────────────┘  │
                               │                 └─────────────────────┘
                               │
@@ -58,6 +58,8 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 - Single GStreamer pipeline with `input-selector` for instant video/blocking switching
 - No process restart needed - just changes which input is active
 - No X11 required - uses DRM/KMS directly via kmssink
+- **Auto-detects HDMI output, resolution, and DRM plane** at startup
+- Works with both 4K and 1080p displays (uses display's preferred resolution)
 - Both ML workers run concurrently on separate NPUs
 - Display runs independently at 30fps without any stutter
 
@@ -94,10 +96,18 @@ python3 stream_sentry.py
 --ocr-timeout 1.5         # OCR timeout in seconds (default: 1.5)
 --max-screenshots 100     # Keep N recent screenshots (default: 50, 0=unlimited)
 --check-signal            # Just check HDMI signal and exit
---connector-id 215        # DRM connector ID (default: 215)
---plane-id 72             # DRM plane ID (default: 72)
+--connector-id 231        # DRM connector ID (auto-detected if not specified)
+--plane-id 192            # DRM plane ID (auto-detected if not specified)
 --webui-port 8080         # Web UI port (default: 8080)
 ```
+
+**Auto-detection:**
+At startup, Stream Sentry automatically probes the DRM subsystem to detect:
+- **Connected HDMI output** - Works with either HDMI-A-1 (connector 215) or HDMI-A-2 (connector 231)
+- **Preferred resolution** - Reads EDID to get the display's preferred mode (e.g., 4K@60Hz or 1080p@60Hz)
+- **NV12-capable overlay plane** - Finds a suitable DRM plane that supports NV12 format for video output
+
+This allows Stream Sentry to work with different displays without manual configuration.
 
 ## Performance
 
