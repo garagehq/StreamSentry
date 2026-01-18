@@ -1,6 +1,6 @@
 [Unit]
-Description=Stream Sentry - HDMI Ad Blocker
-Documentation=https://github.com/garagehq/stream-sentry
+Description=Minus - HDMI Ad Blocker
+Documentation=https://github.com/garagehq/minus
 After=multi-user.target
 Conflicts=gdm.service gdm3.service lightdm.service sddm.service
 StartLimitIntervalSec=300
@@ -10,7 +10,7 @@ StartLimitBurst=5
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/home/radxa/StreamSentry
+WorkingDirectory=/home/radxa/Minus
 
 # Environment
 Environment=PYTHONUNBUFFERED=1
@@ -26,27 +26,27 @@ ExecStartPre=/bin/bash -c 'systemctl stop sddm 2>/dev/null || true'
 ExecStartPre=/bin/bash -c 'pkill -9 Xorg 2>/dev/null || true'
 # Clean up stale processes
 ExecStartPre=/bin/bash -c 'pkill -9 ustreamer 2>/dev/null || true'
-ExecStartPre=/bin/bash -c 'pkill -9 -f "python3.*[s]tream_sentry.py" 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'pkill -9 -f "python3.*[m]inus.py" 2>/dev/null || true'
 ExecStartPre=/bin/bash -c 'fuser -k /dev/video0 2>/dev/null || true'
 # Clean up stale frame files
-ExecStartPre=/bin/bash -c 'rm -f /dev/shm/stream_sentry_frame*.jpg /dev/shm/stream_sentry_vlm_frame*.jpg 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'rm -f /dev/shm/minus_frame*.jpg /dev/shm/minus_vlm_frame*.jpg 2>/dev/null || true'
 # Switch to VT1 and wait for cleanup
 ExecStartPre=/bin/bash -c 'chvt 1 2>/dev/null || true'
 ExecStartPre=/bin/sleep 2
 
 # Main process
-ExecStart=/usr/bin/python3 /home/radxa/StreamSentry/stream_sentry.py
+ExecStart=/usr/bin/python3 /home/radxa/Minus/minus.py
 
 # Graceful stop
 ExecStop=/bin/kill -TERM $MAINPID
 ExecStopPost=/bin/bash -c 'pkill -9 ustreamer 2>/dev/null || true'
-ExecStopPost=/bin/bash -c 'rm -f /dev/shm/stream_sentry_frame*.jpg /dev/shm/stream_sentry_vlm_frame*.jpg 2>/dev/null || true'
+ExecStopPost=/bin/bash -c 'rm -f /dev/shm/minus_frame*.jpg /dev/shm/minus_vlm_frame*.jpg 2>/dev/null || true'
 
 # Restart policy
 Restart=on-failure
 RestartSec=5
 
-# Logging - use journal (view with: journalctl -u stream-sentry -f)
+# Logging - use journal (view with: journalctl -u minus -f)
 StandardOutput=journal
 StandardError=journal
 

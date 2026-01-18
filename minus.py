@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stream Sentry - HDMI passthrough with ML-based ad detection.
+Minus - HDMI passthrough with ML-based ad detection.
 
 Architecture:
 - ustreamer captures from HDMI-RX and serves MJPEG stream + HTTP snapshot
@@ -55,15 +55,15 @@ for handler in root_logger.handlers[:]:
     root_logger.removeHandler(handler)
 
 # Add file handler with rotation
-# Use /tmp/stream_sentry.log - sudoers allows passwordless management
-log_file = Path('/tmp/stream_sentry.log')
+# Use /tmp/minus.log - sudoers allows passwordless management
+log_file = Path('/tmp/minus.log')
 try:
     if log_file.exists():
         try:
             with open(log_file, 'a'):
                 pass
         except PermissionError:
-            # Use sudo to fix permissions (sudoers.d/stream-sentry allows this)
+            # Use sudo to fix permissions (sudoers.d/minus allows this)
             import subprocess
             subprocess.run(['sudo', 'rm', '-f', str(log_file)], capture_output=True)
     if not log_file.exists():
@@ -86,7 +86,7 @@ console_handler.setFormatter(logging.Formatter(log_format, log_datefmt))
 console_handler.setLevel(logging.INFO)
 root_logger.addHandler(console_handler)
 
-logger = logging.getLogger('StreamSentry')
+logger = logging.getLogger('Minus')
 
 # Suppress OpenCV JPEG warnings (this only affects OpenCV's own logging, not libjpeg)
 os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
@@ -396,8 +396,8 @@ def probe_v4l2_device(device: str) -> dict:
 
 
 @dataclass
-class StreamConfig:
-    """Configuration for the stream pipeline."""
+class MinusConfig:
+    """Configuration for the Minus pipeline."""
     device: str = "/dev/video0"
     screenshot_dir: str = "screenshots"
     ocr_timeout: float = 1.5
@@ -419,7 +419,7 @@ class UstreamerCapture:
         self.port = port
         self.snapshot_url = f'http://localhost:{port}/snapshot'
         # Use PID-based filename to avoid conflicts with root-owned stale files
-        self.screenshot_path = f'/dev/shm/stream_sentry_frame_{os.getpid()}.jpg'
+        self.screenshot_path = f'/dev/shm/minus_frame_{os.getpid()}.jpg'
 
     def cleanup(self):
         """Remove the temporary screenshot file."""
@@ -452,17 +452,17 @@ class UstreamerCapture:
             return None
 
 
-class StreamSentry:
+class Minus:
     """
-    Stream Sentry - HDMI passthrough with ML-based ad detection.
+    Minus - HDMI passthrough with ML-based ad detection.
 
     Uses a single GStreamer pipeline with input-selector for instant
     switching between video and blocking overlay.
     """
 
-    def __init__(self, config: StreamConfig = None):
+    def __init__(self, config: MinusConfig = None):
         if config is None:
-            config = StreamConfig()
+            config = MinusConfig()
         self.config = config
         self.device = config.device
         self.ustreamer_process = None
@@ -598,7 +598,7 @@ class StreamSentry:
                 self.ad_blocker = AdBlocker(
                     connector_id=config.drm_connector_id,
                     plane_id=config.drm_plane_id,
-                    stream_sentry=self,
+                    minus_instance=self,
                     ustreamer_port=config.ustreamer_port,
                     output_width=config.output_width,
                     output_height=config.output_height
@@ -1088,7 +1088,7 @@ class StreamSentry:
         subprocess.run(['fuser', '-k', f'{port}/tcp'],
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Remove stale frame files that might be owned by root (use glob for PID-based names)
-        stale_patterns = ['stream_sentry_frame*.jpg', 'stream_sentry_vlm_frame*.jpg']
+        stale_patterns = ['minus_frame*.jpg', 'minus_vlm_frame*.jpg']
         for pattern in stale_patterns:
             for f in Path('/dev/shm').glob(pattern):
                 try:
@@ -1395,7 +1395,7 @@ class StreamSentry:
             logger.error("VLM not ready")
             return
 
-        vlm_image_path = f'/dev/shm/stream_sentry_vlm_frame_{os.getpid()}.jpg'
+        vlm_image_path = f'/dev/shm/minus_vlm_frame_{os.getpid()}.jpg'
 
         while self.running:
             try:
@@ -1599,7 +1599,7 @@ class StreamSentry:
 
     def run(self):
         """Start the stream processing."""
-        logger.info("Starting Stream Sentry...")
+        logger.info("Starting Minus...")
 
         # Check signal
         signal_info = self.check_hdmi_signal()
@@ -1624,7 +1624,7 @@ class StreamSentry:
                                 self.ad_blocker = AdBlocker(
                                     connector_id=self.config.drm_connector_id,
                                     plane_id=self.config.drm_plane_id,
-                                    stream_sentry=self,
+                                    minus_instance=self,
                                     ustreamer_port=self.config.ustreamer_port,
                                     output_width=self.config.output_width,
                                     output_height=self.config.output_height
@@ -1675,7 +1675,7 @@ class StreamSentry:
         if HAS_WEBUI:
             try:
                 self.webui = WebUI(
-                    stream_sentry=self,
+                    minus_instance=self,
                     port=self.config.webui_port,
                     ustreamer_port=self.config.ustreamer_port
                 )
@@ -1697,7 +1697,7 @@ class StreamSentry:
                 logger.warning("VLM model failed to load - VLM detection disabled")
                 self.vlm = None
 
-        logger.info("Stream Sentry running - press Ctrl+C to stop")
+        logger.info("Minus running - press Ctrl+C to stop")
 
         # Monitor ustreamer
         try:
@@ -1768,7 +1768,7 @@ class StreamSentry:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Stream Sentry - HDMI passthrough with ML-based ad detection'
+        description='Minus - HDMI passthrough with ML-based ad detection'
     )
     parser.add_argument(
         '--device', '-d',
@@ -1818,7 +1818,7 @@ def main():
 
     args = parser.parse_args()
 
-    config = StreamConfig(
+    config = MinusConfig(
         device=args.device,
         screenshot_dir=args.screenshot_dir,
         ocr_timeout=args.ocr_timeout,
@@ -1828,10 +1828,10 @@ def main():
         webui_port=args.webui_port,
     )
 
-    sentry = StreamSentry(config)
+    minus = Minus(config)
 
     if args.check_signal:
-        signal_info = sentry.check_hdmi_signal()
+        signal_info = minus.check_hdmi_signal()
         if signal_info:
             width, height, fps = signal_info
             print(f"HDMI signal detected: {width}x{height} @ {fps}fps")
@@ -1842,13 +1842,13 @@ def main():
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")
-        sentry.stop()
+        minus.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    sentry.run()
+    minus.run()
 
 
 if __name__ == '__main__':

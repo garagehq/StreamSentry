@@ -1,7 +1,7 @@
 """
-Stream Sentry Web UI
+Minus Web UI
 
-Lightweight Flask-based web interface for monitoring and controlling Stream Sentry.
+Lightweight Flask-based web interface for monitoring and controlling Minus.
 Accessible via Tailscale for remote debugging and control.
 
 Features:
@@ -20,22 +20,22 @@ from pathlib import Path
 from flask import Flask, jsonify, request, Response, send_from_directory
 import requests
 
-logger = logging.getLogger('StreamSentry.WebUI')
+logger = logging.getLogger('Minus.WebUI')
 
 
 class WebUI:
-    """Web UI server for Stream Sentry."""
+    """Web UI server for Minus."""
 
-    def __init__(self, stream_sentry, port: int = 8080, ustreamer_port: int = 9090):
+    def __init__(self, minus_instance, port: int = 8080, ustreamer_port: int = 9090):
         """
         Initialize web UI.
 
         Args:
-            stream_sentry: StreamSentry instance to control
+            minus_instance: Minus instance to control
             port: Port to run web server on
             ustreamer_port: Port where ustreamer is running (for stream proxy)
         """
-        self.stream_sentry = stream_sentry
+        self.minus = minus_instance
         self.port = port
         self.ustreamer_port = ustreamer_port
         self.server_thread = None
@@ -70,7 +70,7 @@ class WebUI:
         def api_status():
             """Get current status."""
             try:
-                status = self.stream_sentry.get_status_dict()
+                status = self.minus.get_status_dict()
                 return jsonify(status)
             except Exception as e:
                 logger.error(f"Error getting status: {e}")
@@ -83,10 +83,10 @@ class WebUI:
                 return jsonify({'error': 'Invalid duration. Use 1, 2, 5, or 10 minutes.'}), 400
 
             try:
-                self.stream_sentry.pause_blocking(minutes * 60)
+                self.minus.pause_blocking(minutes * 60)
                 return jsonify({
                     'success': True,
-                    'paused_until': self.stream_sentry.blocking_paused_until,
+                    'paused_until': self.minus.blocking_paused_until,
                     'duration_minutes': minutes,
                 })
             except Exception as e:
@@ -97,7 +97,7 @@ class WebUI:
         def api_resume():
             """Resume blocking immediately."""
             try:
-                self.stream_sentry.resume_blocking()
+                self.minus.resume_blocking()
                 return jsonify({'success': True})
             except Exception as e:
                 logger.error(f"Error resuming: {e}")
@@ -107,7 +107,7 @@ class WebUI:
         def api_detections():
             """Get recent detection history."""
             try:
-                detections = list(self.stream_sentry.detection_history)
+                detections = list(self.minus.detection_history)
                 # Return in reverse order (newest first)
                 return jsonify({'detections': detections[::-1]})
             except Exception as e:
@@ -118,7 +118,7 @@ class WebUI:
         def api_logs():
             """Get recent log lines."""
             try:
-                log_file = Path('/tmp/stream_sentry.log')
+                log_file = Path('/tmp/minus.log')
                 if log_file.exists():
                     # Read last 100 lines
                     with open(log_file, 'r') as f:

@@ -2,4 +2,4 @@ screenshots/
 __pycache__/
 __pycache__
 *.log
-stream_sentry.log
+minus.log

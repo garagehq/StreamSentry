@@ -1,4 +1,4 @@
-# Stream Sentry
+# Minus
 
 HDMI passthrough with real-time ML-based ad detection and blocking using dual NPUs:
 - **PaddleOCR** on RK3588 NPU (~300ms per frame)
@@ -9,7 +9,7 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 
 ## Overview
 
-Stream Sentry captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, while running two ML workers concurrently to detect ads. When ads are detected, **instantly** switches to a blocking overlay with Spanish vocabulary practice.
+Minus captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, while running two ML workers concurrently to detect ads. When ads are detected, **instantly** switches to a blocking overlay with Spanish vocabulary practice.
 
 **Key features:**
 - **Instant ad blocking** - GStreamer input-selector switches in ~1 frame (no black screen!)
@@ -58,7 +58,7 @@ Stream Sentry captures video from HDMI-RX, displays it via GStreamer kmssink at 
 ## Quick Start
 
 ```bash
-cd /home/radxa/StreamSentry
+cd /home/radxa/Minus
 
 # Install dependencies (first time only)
 sudo apt install -y imagemagick ffmpeg curl
@@ -71,10 +71,10 @@ cd ustreamer && make -j$(nproc) && sudo cp ustreamer /usr/local/bin/
 pip3 install pyclipper shapely numpy opencv-python pexpect PyGObject
 
 # Run everything
-python3 stream_sentry.py
+python3 minus.py
 
 # Check HDMI signal only
-python3 stream_sentry.py --check-signal
+python3 minus.py --check-signal
 ```
 
 ## Command Line Options
@@ -164,7 +164,7 @@ Hay que aprovechar el tiempo.
 ## Log Output
 
 ```
-2025-12-24 02:32:47 [I] Starting Stream Sentry...
+2025-12-24 02:32:47 [I] Starting Minus...
 2025-12-24 02:32:47 [I] HDMI signal: 3840x2160 @ 30.0fps
 2025-12-24 02:32:50 [I] ustreamer started on port 9090
 2025-12-24 02:32:52 [I] Display pipeline started - 30 FPS with instant ad blocking
@@ -181,9 +181,9 @@ Hay que aprovechar el tiempo.
 ## Project Structure
 
 ```
-stream-sentry/
-├── stream_sentry.py      # Main entry point
-├── stream_sentry.spec    # PyInstaller build spec
+minus/
+├── minus.py              # Main entry point
+├── minus.spec            # PyInstaller build spec
 ├── src/
 │   ├── ocr.py            # PaddleOCR on RKNN NPU
 │   ├── vlm.py            # Qwen3-VL-2B on Axera NPU
@@ -198,7 +198,7 @@ stream-sentry/
 ├── install.sh            # Install as systemd service
 ├── uninstall.sh          # Remove systemd service
 ├── stop.sh               # Graceful shutdown script
-├── stream-sentry.service # systemd service file
+├── minus.service         # systemd service file
 ├── models/
 │   └── paddleocr/        # RKNN models (or symlink)
 ├── screenshots/
@@ -246,7 +246,7 @@ pip3 install --break-system-packages pyclipper shapely numpy opencv-python pexpe
 ## Troubleshooting
 
 **No HDMI signal:**
-When started without HDMI input, Stream Sentry displays "NO HDMI INPUT" on screen
+When started without HDMI input, Minus displays "NO HDMI INPUT" on screen
 and waits for user to connect a source. To check signal manually:
 ```bash
 v4l2-ctl -d /dev/video0 --query-dv-timings
@@ -302,17 +302,17 @@ videobalance saturation=0.85  # Range 0-2, default 1.0
 
 ## Running as a Service
 
-Stream Sentry can run as a systemd service for 24/7 unattended operation:
+Minus can run as a systemd service for 24/7 unattended operation:
 
 ```bash
 # Install as systemd service
 sudo ./install.sh
 
 # View logs
-journalctl -u stream-sentry -f
+journalctl -u minus -f
 
 # Stop service
-sudo systemctl stop stream-sentry
+sudo systemctl stop minus
 
 # Uninstall
 sudo ./uninstall.sh
@@ -325,7 +325,7 @@ The service automatically:
 
 ## Health Monitoring
 
-Stream Sentry includes a unified health monitor that runs in the background:
+Minus includes a unified health monitor that runs in the background:
 
 **What it monitors:**
 - HDMI signal (detects unplug/replug, shows "NO SIGNAL" message)
@@ -358,7 +358,7 @@ Stream Sentry includes a unified health monitor that runs in the background:
 
 ## Web UI
 
-Stream Sentry includes a mobile-friendly web UI for remote monitoring and control:
+Minus includes a mobile-friendly web UI for remote monitoring and control:
 
 **Access:**
 - Local: `http://localhost:8080`
@@ -373,7 +373,7 @@ Stream Sentry includes a mobile-friendly web UI for remote monitoring and contro
 - **Log viewer** - Collapsible log output for debugging
 
 **Pause & Training Data:**
-When you pause blocking via the WebUI, Stream Sentry automatically saves a screenshot
+When you pause blocking via the WebUI, Minus automatically saves a screenshot
 to `screenshots/non_ad/`. This creates training data for improving the VLM:
 - **Pausing = "this is NOT an ad"** (false positive correction)
 - Screenshots saved with `non_ad_` prefix for easy labeling
@@ -382,9 +382,9 @@ to `screenshots/non_ad/`. This creates training data for improving the VLM:
 ## Housekeeping
 
 **Log File:**
-- Location: `/tmp/stream_sentry.log`
+- Location: `/tmp/minus.log`
 - Max 5MB per log file
-- Keeps 3 backup files (stream_sentry.log.1, .2, .3)
+- Keeps 3 backup files (minus.log.1, .2, .3)
 
 **Screenshot Management:**
 - Ad screenshots: `screenshots/ocr/` (auto-truncated to last 50)
@@ -408,16 +408,16 @@ to `screenshots/non_ad/`. This creates training data for improving the VLM:
 
 ## Building Executable
 
-Stream Sentry can be compiled into a standalone executable using PyInstaller:
+Minus can be compiled into a standalone executable using PyInstaller:
 
 ```bash
 # Install PyInstaller
 pip3 install pyinstaller
 
 # Build executable
-pyinstaller stream_sentry.spec
+pyinstaller minus.spec
 
-# Output will be in dist/stream_sentry
+# Output will be in dist/minus
 ```
 
 **Note:** The executable still requires external model files at runtime:

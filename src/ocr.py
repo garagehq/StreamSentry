@@ -1,5 +1,5 @@
 """
-PaddleOCR module for Stream Sentry using RKNN NPU.
+PaddleOCR module for Minus using RKNN NPU.
 
 Detects text in frames and checks for ad-related keywords.
 """
@@ -387,7 +387,7 @@ class PaddleOCR:
         r'\[I\]|\[W\]|\[E\]', # Log level indicators
         r'Exit code',        # Command exit
         r'ctrl\+',           # Keyboard shortcuts
-        r'stream_sentry',    # Our own script
+        r'minus',            # Our own script
         r'OCR #\d+',         # Our log output
         r'^\d{4}-\d{2}-\d{2}', # Timestamps
         r'Error:|Warning:',  # Error messages

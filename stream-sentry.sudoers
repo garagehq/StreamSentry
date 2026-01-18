@@ -1,9 +1,0 @@
-# Stream Sentry sudoers configuration
-# Allows managing the log file without password
-# Install with: sudo cp stream-sentry.sudoers /etc/sudoers.d/stream-sentry
-
-# Allow all users to manage stream_sentry log file
-ALL ALL=(ALL) NOPASSWD: /usr/bin/rm -f /tmp/stream_sentry.log
-ALL ALL=(ALL) NOPASSWD: /usr/bin/rm -f /tmp/stream_sentry.log.*
-ALL ALL=(ALL) NOPASSWD: /usr/bin/touch /tmp/stream_sentry.log
-ALL ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /tmp/stream_sentry.log

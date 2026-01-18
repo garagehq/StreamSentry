@@ -1,0 +1,9 @@
+# Minus sudoers configuration
+# Allows managing the log file without password
+# Install with: sudo cp minus.sudoers /etc/sudoers.d/minus
+
+# Allow all users to manage minus log file
+ALL ALL=(ALL) NOPASSWD: /usr/bin/rm -f /tmp/minus.log
+ALL ALL=(ALL) NOPASSWD: /usr/bin/rm -f /tmp/minus.log.*
+ALL ALL=(ALL) NOPASSWD: /usr/bin/touch /tmp/minus.log
+ALL ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /tmp/minus.log

@@ -1,5 +1,5 @@
 """
-Ad Blocker Overlay for Stream Sentry.
+Ad Blocker Overlay for Minus.
 
 Displays a blocking overlay when ads are detected on screen.
 Uses GStreamer with input-selector for instant switching between video and blocking.
@@ -179,14 +179,14 @@ class DRMAdBlocker:
     input is active, no process restart needed.
     """
 
-    def __init__(self, connector_id=215, plane_id=72, stream_sentry=None, ustreamer_port=9090,
+    def __init__(self, connector_id=215, plane_id=72, minus_instance=None, ustreamer_port=9090,
                  output_width=1920, output_height=1080):
         self.is_visible = False
         self.current_source = None
         self.connector_id = connector_id
         self.plane_id = plane_id
         self.ustreamer_port = ustreamer_port
-        self.stream_sentry = stream_sentry
+        self.minus = minus_instance
         self.output_width = output_width or 1920
         self.output_height = output_height or 1080
         self._lock = threading.Lock()
@@ -199,7 +199,7 @@ class DRMAdBlocker:
         self.textoverlay = None
         self.bus = None
 
-        # Audio passthrough reference (set by stream_sentry)
+        # Audio passthrough reference (set by minus)
         self.audio = None
 
         # Pipeline health tracking
@@ -463,18 +463,18 @@ class DRMAdBlocker:
                 should_show_blocking = False
                 blocking_source = None
 
-                if self.stream_sentry:
+                if self.minus:
                     # Only restore blocking if:
                     # 1. Ad is actually detected (not just hdmi_lost/no_signal)
                     # 2. Blocking is not paused
                     # 3. Not suppressed due to static screen
-                    if (self.stream_sentry.ad_detected and
-                        self.stream_sentry.blocking_source and
-                        self.stream_sentry.blocking_source not in ('hdmi_lost', 'no_hdmi_device') and
-                        not self.stream_sentry.is_blocking_paused() and
-                        not self.stream_sentry.static_blocking_suppressed):
+                    if (self.minus.ad_detected and
+                        self.minus.blocking_source and
+                        self.minus.blocking_source not in ('hdmi_lost', 'no_hdmi_device') and
+                        not self.minus.is_blocking_paused() and
+                        not self.minus.static_blocking_suppressed):
                         should_show_blocking = True
-                        blocking_source = self.stream_sentry.blocking_source
+                        blocking_source = self.minus.blocking_source
 
                 if should_show_blocking and self.selector and self.blocking_pad:
                     self.selector.set_property('active-pad', self.blocking_pad)
@@ -503,7 +503,7 @@ class DRMAdBlocker:
             self._pipeline_restarting = False
 
     def restart(self):
-        """Public method to restart the video pipeline (called by stream_sentry)."""
+        """Public method to restart the video pipeline (called by minus)."""
         logger.info("[DRMAdBlocker] External restart requested")
         threading.Thread(target=self._restart_pipeline, daemon=True).start()
 
@@ -657,9 +657,9 @@ class DRMAdBlocker:
             self._rotation_thread.join(timeout=1.0)
             self._rotation_thread = None
 
-    def set_stream_sentry(self, stream_sentry):
-        """Set reference to StreamSentry."""
-        self.stream_sentry = stream_sentry
+    def set_minus(self, minus_instance):
+        """Set reference to Minus instance."""
+        self.minus = minus_instance
 
     def set_audio(self, audio):
         """Set reference to AudioPassthrough for mute control."""
@@ -703,8 +703,8 @@ class DRMAdBlocker:
             self._start_rotation(source)
 
             # Set flag to prevent external restarts
-            if self.stream_sentry:
-                self.stream_sentry.blocking_active = True
+            if self.minus:
+                self.minus.blocking_active = True
 
     def hide(self):
         """Switch back to video stream - INSTANT, no pipeline restart."""
@@ -716,8 +716,8 @@ class DRMAdBlocker:
             self.current_source = None
 
             # Clear blocking flag
-            if self.stream_sentry:
-                self.stream_sentry.blocking_active = False
+            if self.minus:
+                self.minus.blocking_active = False
 
             # Stop vocabulary rotation (safe to call even if not running)
             self._stop_rotation_thread()

@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for Stream Sentry.
+PyInstaller spec file for Minus.
 
 Build with:
-    pyinstaller stream_sentry.spec
+    pyinstaller minus.spec
 
 Note: Models are external and must be present at runtime:
     - PaddleOCR models: /home/radxa/rknn-llm/.../paddleocr/
@@ -78,7 +78,7 @@ src_modules = [
 ]
 
 a = Analysis(
-    ['stream_sentry.py'],
+    ['minus.py'],
     pathex=[],
     binaries=[],
     datas=src_modules,
@@ -117,7 +117,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='stream_sentry',
+    name='minus',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

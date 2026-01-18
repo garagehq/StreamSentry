@@ -138,7 +138,7 @@ Available on RK3588:
 - `mppvp8enc` - Hardware VP8 encoder
 - `mppvideodec` - Hardware video decoder
 
-## Implementing in stream_sentry.py
+## Implementing in minus.py
 
 To achieve 30fps display, replace ffplay/mpv with GStreamer:
 
@@ -501,6 +501,6 @@ Using the video overlay plane eliminates all CPU format conversion, achieving tr
 ## Next Steps
 
 1. ✅ **ACHIEVED 30 FPS display** - Problem solved!
-2. **Integrate into stream_sentry.py** - Use the new pipeline configuration
+2. **Integrate into minus.py** - Use the new pipeline configuration
 3. **Create systemd service** - Auto-start without X11 for dedicated HDMI passthrough mode
 4. **Test color calibration** - Verify NV12 color accuracy vs RGB

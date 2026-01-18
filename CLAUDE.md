@@ -1,4 +1,4 @@
-# Stream Sentry - Development Notes
+# Minus - Development Notes
 
 ## Overview
 
@@ -67,8 +67,8 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 
 | File | Purpose |
 |------|---------|
-| `stream_sentry.py` | Main entry point - orchestrates everything |
-| `stream_sentry.spec` | PyInstaller spec for building executable |
+| `minus.py` | Main entry point - orchestrates everything |
+| `minus.spec` | PyInstaller spec for building executable |
 | `src/ad_blocker.py` | GStreamer video pipeline with input-selector, Spanish vocab |
 | `src/audio.py` | GStreamer audio passthrough with mute control |
 | `src/ocr.py` | PaddleOCR on RKNN NPU, keyword detection |
@@ -80,14 +80,14 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | `install.sh` | Install as systemd service |
 | `uninstall.sh` | Remove systemd service |
 | `stop.sh` | Graceful shutdown script |
-| `stream-sentry.service` | systemd service file |
+| `minus.service` | systemd service file |
 | `screenshots/ocr/` | Ad detection screenshots (auto-truncated) |
 | `screenshots/non_ad/` | Non-ad screenshots for VLM training |
 
 ## Running
 
 ```bash
-python3 stream_sentry.py
+python3 minus.py
 ```
 
 **Command-line options:**
@@ -102,13 +102,13 @@ python3 stream_sentry.py
 ```
 
 **Auto-detection:**
-At startup, Stream Sentry automatically probes the DRM subsystem to detect:
+At startup, Minus automatically probes the DRM subsystem to detect:
 - **Connected HDMI output** - Works with either HDMI-A-1 (connector 215) or HDMI-A-2 (connector 231)
 - **Preferred resolution** - Reads EDID to get the display's preferred mode (e.g., 4K@60Hz or 1080p@60Hz)
 - **NV12-capable overlay plane** - Finds a suitable DRM plane that supports NV12 format for video output
 - **Audio output device** - Matches ALSA device to the connected HDMI output (hw:0,0 for HDMI-A-1, hw:1,0 for HDMI-A-2)
 
-This allows Stream Sentry to work with different displays without manual configuration.
+This allows Minus to work with different displays without manual configuration.
 
 ## Performance
 
@@ -146,7 +146,7 @@ Our fork adds NV12→JPEG encoding via Rockchip MPP (Media Process Platform) tha
 achieves ~60fps on 4K input with minimal CPU usage.
 
 **Dynamic Format Detection:**
-StreamSentry automatically probes the V4L2 device to detect its current format
+Minus automatically probes the V4L2 device to detect its current format
 and resolution. Supported formats:
 - **NV12** - RK3588 HDMI-RX native (uses MPP hardware encoder)
 - **BGR24/BGR3** - Some HDMI devices (uses standard ustreamer BGR24 support)
@@ -160,7 +160,7 @@ and resolution. Supported formats:
 | CPU encoding | ~4 fps | ~100% | CPU can't keep up with 4K JPEG encoding |
 | MPP hardware | **~60 fps** | **~5%** | `--encoder=mpp-jpeg` (default) |
 
-**ustreamer command (used by StreamSentry):**
+**ustreamer command (used by Minus):**
 ```bash
 /home/radxa/ustreamer-patched \
   --device=/dev/video0 \
@@ -184,7 +184,7 @@ cd /home/radxa/ustreamer-garagehq
 make WITH_MPP=1
 cp ustreamer /home/radxa/ustreamer-patched
 
-# StreamSentry uses /home/radxa/ustreamer-patched automatically
+# Minus uses /home/radxa/ustreamer-patched automatically
 ```
 
 **Key changes in garagehq/ustreamer:**
@@ -291,9 +291,9 @@ Hay que aprovechar el tiempo.
 ## Housekeeping
 
 **Log File:**
-- Location: `/tmp/stream_sentry.log`
+- Location: `/tmp/minus.log`
 - Max 5MB per log file
-- Keeps 3 backup files (stream_sentry.log.1, .2, .3)
+- Keeps 3 backup files (minus.log.1, .2, .3)
 
 **Screenshot Truncation:**
 - Keeps only last 50 screenshots by default
@@ -417,7 +417,7 @@ The health monitor (`src/health.py`) runs in a background thread and checks:
 
 ## Web UI
 
-Stream Sentry includes a lightweight Flask-based web UI for remote monitoring and control,
+Minus includes a lightweight Flask-based web UI for remote monitoring and control,
 accessible via Tailscale from desktop or mobile devices.
 
 **Features:**
@@ -466,7 +466,7 @@ accessible via Tailscale from desktop or mobile devices.
 
 ## VLM Training Data Collection
 
-Stream Sentry automatically collects training data for future VLM improvements:
+Minus automatically collects training data for future VLM improvements:
 
 **Ad screenshots** (`screenshots/ocr/`):
 - Saved when OCR detects ad keywords
@@ -481,7 +481,7 @@ Stream Sentry automatically collects training data for future VLM improvements:
 - Filename format: `non_ad_YYYYMMDD_HHMMSS_mmm_NNNN.png`
 
 **Training workflow:**
-1. Run Stream Sentry normally
+1. Run Minus normally
 2. When you see a false positive (blocking non-ad content), pause via WebUI
 3. Non-ad screenshot is automatically saved
 4. Use collected screenshots to fine-tune VLM:
@@ -495,10 +495,10 @@ Stream Sentry automatically collects training data for future VLM improvements:
 sudo ./install.sh
 
 # View logs
-journalctl -u stream-sentry -f
+journalctl -u minus -f
 
 # Stop
-sudo systemctl stop stream-sentry
+sudo systemctl stop minus
 ./stop.sh  # Alternative with optional X11 restart
 
 # Uninstall
@@ -533,9 +533,9 @@ The service:
 pip3 install pyinstaller
 
 # Build standalone executable
-pyinstaller stream_sentry.spec
+pyinstaller minus.spec
 
-# Output: dist/stream_sentry
+# Output: dist/minus
 ```
 
 Note: Models are external and must be present at runtime.

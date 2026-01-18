@@ -1,14 +1,14 @@
 #!/bin/bash
-# Stream Sentry Installation Script
+# Minus Installation Script
 # Sets up systemd service for auto-start on boot
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="stream-sentry"
-SERVICE_FILE="${SCRIPT_DIR}/stream-sentry.service"
+SERVICE_NAME="minus"
+SERVICE_FILE="${SCRIPT_DIR}/minus.service"
 
-echo "=== Stream Sentry Installation ==="
+echo "=== Minus Installation ==="
 echo ""
 
 # Check root

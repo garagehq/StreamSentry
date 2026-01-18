@@ -238,8 +238,8 @@ For live passthrough, sync shouldn't be an issue. Both pipelines process data as
 ## File Structure After Implementation
 
 ```
-stream-sentry/
-├── stream_sentry.py      # Orchestrator (initialize audio)
+minus/
+├── minus.py              # Orchestrator (initialize audio)
 ├── src/
 │   ├── ad_blocker.py     # Video pipeline + mute integration
 │   ├── audio.py          # NEW: Audio passthrough pipeline

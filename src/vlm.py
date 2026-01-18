@@ -1,5 +1,5 @@
 """
-VLM (Vision Language Model) integration for Stream Sentry.
+VLM (Vision Language Model) integration for Minus.
 
 Uses Qwen3-VL-2B-INT4 on Axera LLM 8850 NPU for ad detection.
 Model is loaded ONCE at startup and kept running for fast inference.
@@ -13,7 +13,7 @@ import logging
 import threading
 from pathlib import Path
 
-logger = logging.getLogger('StreamSentry.VLM')
+logger = logging.getLogger('Minus.VLM')
 
 # Model paths
 QWEN3_MODEL_DIR = Path("/home/radxa/axera_models/Qwen3-VL-2B")

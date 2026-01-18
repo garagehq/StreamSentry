@@ -1,5 +1,5 @@
 """
-Health Monitor for Stream Sentry.
+Health Monitor for Minus.
 
 Unified watchdog that monitors all subsystems and triggers recovery actions.
 
@@ -44,21 +44,21 @@ class HealthStatus:
 
 class HealthMonitor:
     """
-    Unified health monitor for Stream Sentry.
+    Unified health monitor for Minus.
 
     Runs a background thread that periodically checks all subsystems
     and triggers recovery actions when issues are detected.
     """
 
-    def __init__(self, stream_sentry, check_interval: float = 5.0):
+    def __init__(self, minus, check_interval: float = 5.0):
         """
         Initialize health monitor.
 
         Args:
-            stream_sentry: Reference to main StreamSentry instance
+            minus: Reference to main Minus instance
             check_interval: How often to check health (seconds)
         """
-        self.stream_sentry = stream_sentry
+        self.minus = minus
         self.check_interval = check_interval
 
         self._monitor_thread = None
@@ -116,19 +116,19 @@ class HealthMonitor:
         status.ustreamer_responding, status.last_frame_age = self._check_ustreamer_responding()
 
         # Pipelines
-        if self.stream_sentry.ad_blocker:
+        if self.minus.ad_blocker:
             status.video_pipeline_ok = self._check_video_pipeline()
-            status.output_fps = self.stream_sentry.ad_blocker.get_fps()
-        if self.stream_sentry.audio:
+            status.output_fps = self.minus.ad_blocker.get_fps()
+        if self.minus.audio:
             status.audio_pipeline_ok = self._check_audio_pipeline()
 
         # ML workers
-        if self.stream_sentry.vlm:
-            status.vlm_ready = self.stream_sentry.vlm.is_ready
+        if self.minus.vlm:
+            status.vlm_ready = self.minus.vlm.is_ready
             status.vlm_consecutive_timeouts = getattr(
-                self.stream_sentry.vlm, 'consecutive_timeouts', 0
+                self.minus.vlm, 'consecutive_timeouts', 0
             )
-        if self.stream_sentry.ocr:
+        if self.minus.ocr:
             status.ocr_ready = True  # OCR doesn't have ready state
 
         # Resources
@@ -201,13 +201,13 @@ class HealthMonitor:
 
         # Audio unmute watchdog - ensure audio is not muted when not blocking
         # This prevents audio from getting stuck muted due to race conditions or bugs
-        if self.stream_sentry.audio and self.stream_sentry.ad_blocker:
-            is_blocking = self.stream_sentry.ad_blocker.is_visible
-            is_muted = self.stream_sentry.audio.is_muted
+        if self.minus.audio and self.minus.ad_blocker:
+            is_blocking = self.minus.ad_blocker.is_visible
+            is_muted = self.minus.audio.is_muted
 
             if not is_blocking and is_muted:
                 logger.warning("[HealthMonitor] Audio stuck muted while not blocking - forcing unmute")
-                self.stream_sentry.audio.unmute()
+                self.minus.audio.unmute()
 
         # VLM health
         if status.vlm_consecutive_timeouts >= self.vlm_timeout_threshold:
@@ -315,10 +315,10 @@ class HealthMonitor:
     def _check_video_pipeline(self) -> bool:
         """Check if video GStreamer pipeline is healthy."""
         try:
-            if not self.stream_sentry.ad_blocker:
+            if not self.minus.ad_blocker:
                 return False
 
-            pipeline = self.stream_sentry.ad_blocker.pipeline
+            pipeline = self.minus.ad_blocker.pipeline
             if not pipeline:
                 return False
 
@@ -333,10 +333,10 @@ class HealthMonitor:
     def _check_audio_pipeline(self) -> bool:
         """Check if audio GStreamer pipeline is healthy."""
         try:
-            if not self.stream_sentry.audio:
+            if not self.minus.audio:
                 return False
 
-            status = self.stream_sentry.audio.get_status()
+            status = self.minus.audio.get_status()
             if isinstance(status, dict):
                 return status.get('state') == 'playing'
             return False

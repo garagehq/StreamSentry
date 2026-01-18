@@ -1,11 +1,11 @@
 #!/bin/bash
-# Stream Sentry Uninstall Script
+# Minus Uninstall Script
 
 set -e
 
-SERVICE_NAME="stream-sentry"
+SERVICE_NAME="minus"
 
-echo "=== Stream Sentry Uninstall ==="
+echo "=== Minus Uninstall ==="
 echo ""
 
 # Check root
@@ -30,5 +30,5 @@ systemctl daemon-reload
 echo ""
 echo "=== Uninstall Complete ==="
 echo ""
-echo "Stream Sentry service has been removed."
+echo "Minus service has been removed."
 echo "To restart X11: sudo systemctl start gdm3"
