@@ -58,16 +58,18 @@ class FireTVSetupManager:
     STATE_CONNECTED = "connected"
     STATE_SKIPPED = "skipped"
 
-    def __init__(self, ad_blocker=None, ocr_worker=None):
+    def __init__(self, ad_blocker=None, ocr_worker=None, ustreamer_port: int = 9090):
         """
         Initialize Fire TV setup manager.
 
         Args:
-            ad_blocker: DRMAdBlocker instance for showing overlays
+            ad_blocker: DRMAdBlocker instance (kept for compatibility, not used for overlay)
             ocr_worker: OCR worker for detecting dialogs (optional)
+            ustreamer_port: Port where ustreamer is running (for overlay API)
         """
         self.ad_blocker = ad_blocker
         self.ocr_worker = ocr_worker
+        self.ustreamer_port = ustreamer_port
         self.controller = None
 
         self._state = self.STATE_IDLE
@@ -92,11 +94,15 @@ class FireTVSetupManager:
         # Fire TV info (once connected)
         self._fire_tv_info: Optional[dict] = None
 
-        # Initialize notification overlay (small corner notification)
-        # DISABLED: Notification overlay on video path causes pipeline stalls
-        # TODO: Re-enable after fixing GStreamer pipeline overlay issue
-        self._notification = None
-        logger.info("[FireTVSetup] Notification overlay disabled (pipeline fix pending)")
+        # Initialize notification overlay using ustreamer API
+        # This renders text directly in the MPP encoder - no GStreamer pipeline issues
+        try:
+            from src.overlay import FireTVNotification
+            self._notification = FireTVNotification(ustreamer_port=ustreamer_port)
+            logger.info("[FireTVSetup] Notification overlay enabled (ustreamer API)")
+        except Exception as e:
+            logger.warning(f"[FireTVSetup] Failed to initialize notification overlay: {e}")
+            self._notification = None
 
     @property
     def state(self) -> str:

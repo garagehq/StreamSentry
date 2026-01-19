@@ -76,8 +76,8 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | `src/health.py` | Unified health monitor for all subsystems |
 | `src/webui.py` | Flask web UI for remote monitoring/control |
 | `src/fire_tv.py` | Fire TV ADB remote control for ad skipping |
-| `src/fire_tv_setup.py` | Fire TV auto-setup flow (overlays disabled) |
-| `src/overlay.py` | Notification overlay module (disabled - pipeline issue) |
+| `src/fire_tv_setup.py` | Fire TV auto-setup flow with overlay notifications |
+| `src/overlay.py` | Notification overlay via ustreamer API |
 | `test_fire_tv.py` | Fire TV controller test and interactive remote |
 | `src/templates/index.html` | Web UI single-page app |
 | `src/static/style.css` | Web UI dark theme styles |
@@ -374,35 +374,55 @@ pkill -9 ustreamer    # Kill orphaned ustreamer
 - Check DRM plane: `modetest -M rockchip -p | grep -A5 "plane\[72\]"`
 - Verify connector: `modetest -M rockchip -c | grep HDMI`
 
+## ustreamer Text Overlay API
+
+Text overlay is rendered directly in ustreamer's MPP encoder before JPEG compression. This avoids GStreamer pipeline modifications and has minimal CPU impact.
+
+**API Endpoints:**
+- `GET /overlay` - Get current overlay configuration
+- `GET /overlay/set?params` - Set overlay configuration
+
+**Parameters:**
+| Parameter | Description |
+|-----------|-------------|
+| `text` | Text to display (URL-encoded, supports newlines) |
+| `enabled` | `true` or `1` to enable overlay |
+| `position` | 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right, 4=center |
+| `scale` | Text scale factor (1-10) |
+| `color_y`, `color_u`, `color_v` | Text color in YUV |
+| `bg_enabled` | Enable background box |
+| `bg_alpha` | Background transparency (0-255) |
+| `clear` | Clear overlay |
+
+**Example Usage:**
+```bash
+# Show overlay
+curl "http://localhost:9090/overlay/set?text=LIVE&position=1&scale=3&enabled=true"
+
+# Clear overlay
+curl "http://localhost:9090/overlay/set?clear=true"
+```
+
+**Implementation:**
+- `ustreamer-garagehq/src/libs/overlay.c` - NV12 text rendering
+- `ustreamer-garagehq/src/libs/overlay.h` - API definitions
+- `src/overlay.py` - Python wrapper for ustreamer overlay API
+
 ## Known Issues / TODO
 
-### Notification Overlay on Video Path (BROKEN)
+### GStreamer Video Path Overlay (Historical - FIXED)
 
-**Problem:** Adding a `textoverlay` element to the video input path causes the pipeline to stall every ~12 seconds with "Video pipeline stalled" errors.
+**Previous problem:** Adding a `textoverlay` element to the GStreamer video path caused pipeline stalls every ~12 seconds due to NV12 format incompatibility and 4K→1080p resolution mismatch.
 
-**What was tried:**
-1. Adding textoverlay directly after mppjpegdec → Pipeline stalls (NV12 format not supported by textoverlay)
-2. Adding `videoconvert ! video/x-raw,format=I420 ! textoverlay ! videoconvert ! video/x-raw,format=NV12` → Still stalls
-3. Adding explicit width/height caps constraints → Format negotiation failure (`not-negotiated -4`)
-
-**Root cause:** The mppjpegdec outputs 4K NV12 (3840x2160) from ustreamer, but the display is 1080p. The caps filter tried to constrain to 1080p without a scaler, causing negotiation failure. Even with videoconvert, the CPU cost of converting 4K frames twice per frame is too high.
-
-**Current workaround:** Notification overlay disabled on video path. Notifications only show during blocking mode (on the blocking path, which uses videotestsrc at native resolution).
-
-**Potential solutions to investigate:**
-1. Use a separate DRM overlay plane for notifications (hardware compositing)
-2. Add text overlay in ustreamer itself (modify garagehq/ustreamer)
-3. Use videoscale to downscale before textoverlay, then back to NV12
-4. Use cairo/pango overlay with hardware acceleration
-
-**Files affected:**
-- `src/ad_blocker.py` - Pipeline definition
-- `src/overlay.py` - NotificationOverlay class (works, but can't attach to video path)
-- `src/fire_tv_setup.py` - Uses notification overlay for setup guidance
+**Solution implemented:** Text overlay is now rendered directly in ustreamer's MPP encoder via the `/overlay/set` HTTP API. This:
+- Draws text directly on NV12 frames before JPEG encoding
+- Has minimal CPU impact (~0.5ms per frame)
+- Works at any resolution without GStreamer pipeline changes
+- Supports multiple positions, colors, and backgrounds
 
 ### Fire TV Setup
 
-**Status:** Fire TV auto-setup is ENABLED. Notification overlays are disabled until pipeline fix.
+**Status:** Fire TV auto-setup is ENABLED with notification overlays working via ustreamer API.
 
 **Startup timing:**
 - Fire TV setup starts 5 seconds after service start (runs in parallel with VLM loading)
@@ -412,9 +432,9 @@ pkill -9 ustreamer    # Kill orphaned ustreamer
 
 **Files:**
 - `minus.py:1908` - `_start_fire_tv_setup_delayed(delay_seconds=5.0)`
-- `src/fire_tv_setup.py` - Setup manager (notification overlay disabled)
+- `src/fire_tv_setup.py` - Setup manager with notification overlay via ustreamer API
 - `src/fire_tv.py` - ADB controller
-- `src/overlay.py` - Notification overlay (not used until pipeline fix)
+- `src/overlay.py` - Notification overlay using ustreamer HTTP API
 
 ## Color Correction
 

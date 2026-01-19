@@ -4,14 +4,16 @@ Notification Overlay Module for Minus.
 Provides small corner overlays for notifications and guidance
 without blocking the main video content.
 
-Unlike ad_blocker's full-screen blocking overlay, this module
-shows small text notifications in a corner of the screen while
-the video continues playing.
+Uses ustreamer's overlay API to render text directly on the
+video stream via the MPP hardware encoder - no GStreamer
+pipeline modifications needed.
 """
 
 import logging
 import threading
 import time
+import urllib.request
+import urllib.parse
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -19,31 +21,49 @@ logger = logging.getLogger(__name__)
 
 class NotificationOverlay:
     """
-    Manages small corner notification overlays.
+    Manages small corner notification overlays via ustreamer API.
 
     Shows guidance text in a corner of the screen without blocking
-    the main video content. Uses GStreamer textoverlay element.
+    the main video content. Uses ustreamer's /overlay/set HTTP API
+    to render text directly in the MPP encoder.
 
-    Position: Top-right corner
-    Size: ~380px wide at 1080p, scaled for higher resolutions
+    Position: Top-right corner by default
     """
 
-    # Overlay positions
-    POSITION_TOP_RIGHT = 'top-right'
-    POSITION_TOP_LEFT = 'top-left'
-    POSITION_BOTTOM_RIGHT = 'bottom-right'
-    POSITION_BOTTOM_LEFT = 'bottom-left'
+    # Overlay positions (matching ustreamer API)
+    POSITION_TOP_LEFT = 0
+    POSITION_TOP_RIGHT = 1
+    POSITION_BOTTOM_LEFT = 2
+    POSITION_BOTTOM_RIGHT = 3
+    POSITION_CENTER = 4
 
-    def __init__(self, ad_blocker=None, position: str = POSITION_TOP_RIGHT):
+    # String position names for compatibility
+    POS_TOP_RIGHT = 'top-right'
+    POS_TOP_LEFT = 'top-left'
+    POS_BOTTOM_RIGHT = 'bottom-right'
+    POS_BOTTOM_LEFT = 'bottom-left'
+    POS_CENTER = 'center'
+
+    # Map string positions to API values
+    _POS_MAP = {
+        'top-left': 0,
+        'top-right': 1,
+        'bottom-left': 2,
+        'bottom-right': 3,
+        'center': 4,
+    }
+
+    def __init__(self, ustreamer_port: int = 9090, position: str = POS_TOP_RIGHT):
         """
         Initialize notification overlay.
 
         Args:
-            ad_blocker: DRMAdBlocker instance (has access to GStreamer pipeline)
+            ustreamer_port: Port where ustreamer is running (default: 9090)
             position: Corner position for overlay
         """
-        self.ad_blocker = ad_blocker
+        self.ustreamer_port = ustreamer_port
         self.position = position
+        self._api_position = self._POS_MAP.get(position, 1)  # Default top-right
 
         # Overlay state
         self._visible = False
@@ -54,39 +74,45 @@ class NotificationOverlay:
         self._auto_hide_timer: Optional[threading.Timer] = None
         self._default_duration = 10.0  # Default auto-hide after 10s
 
-        # Get output resolution for scaling
-        self._output_width = 1920
-        self._output_height = 1080
-        if ad_blocker:
-            self._output_width = getattr(ad_blocker, 'output_width', 1920)
-            self._output_height = getattr(ad_blocker, 'output_height', 1080)
+        # Default styling
+        self._scale = 3  # Text scale factor
+        self._bg_alpha = 200  # Background transparency
 
-        # Calculate overlay size based on resolution
-        # Base: 380px at 1080p
-        self._base_width = 380
-        self._scale_factor = self._output_height / 1080.0
-        self._overlay_width = int(self._base_width * self._scale_factor)
+        # API endpoint
+        self._api_base = f"http://localhost:{ustreamer_port}/overlay/set"
 
-        logger.info(f"[Overlay] Initialized at {position}, "
-                   f"width={self._overlay_width}px (scale={self._scale_factor:.2f}x)")
+        logger.info(f"[Overlay] Initialized with ustreamer API at port {ustreamer_port}, position={position}")
 
-    def _get_halign_valign(self) -> tuple:
-        """Get GStreamer halign/valign values for position."""
-        if self.position == self.POSITION_TOP_RIGHT:
-            return ('right', 'top')
-        elif self.position == self.POSITION_TOP_LEFT:
-            return ('left', 'top')
-        elif self.position == self.POSITION_BOTTOM_RIGHT:
-            return ('right', 'bottom')
-        elif self.position == self.POSITION_BOTTOM_LEFT:
-            return ('left', 'bottom')
-        return ('right', 'top')  # Default
+    def _call_api(self, params: dict) -> bool:
+        """
+        Call the ustreamer overlay API.
 
-    def _get_font_size(self) -> int:
-        """Get font size scaled for resolution."""
-        # Base: 18px at 1080p
-        base_size = 18
-        return int(base_size * self._scale_factor)
+        Args:
+            params: Query parameters for the API
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Build query string
+            query = urllib.parse.urlencode(params)
+            url = f"{self._api_base}?{query}"
+
+            # Make request with short timeout
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=2.0) as response:
+                if response.status == 200:
+                    return True
+                else:
+                    logger.warning(f"[Overlay] API returned status {response.status}")
+                    return False
+
+        except urllib.error.URLError as e:
+            logger.error(f"[Overlay] API connection error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"[Overlay] API error: {e}")
+            return False
 
     def show(self, text: str, duration: float = None, background: bool = True):
         """
@@ -106,8 +132,21 @@ class NotificationOverlay:
             self._current_text = text
             self._visible = True
 
-            # Update the overlay via ad_blocker's notification textoverlay
-            self._update_overlay(text, background)
+            # Call ustreamer API
+            params = {
+                'text': text,
+                'position': self._api_position,
+                'scale': self._scale,
+                'enabled': 'true',
+            }
+
+            if background:
+                params['bg_enabled'] = 'true'
+                params['bg_alpha'] = self._bg_alpha
+            else:
+                params['bg_enabled'] = 'false'
+
+            self._call_api(params)
 
             # Set auto-hide timer if duration specified
             if duration is not None and duration > 0:
@@ -128,8 +167,8 @@ class NotificationOverlay:
             self._visible = False
             self._current_text = None
 
-            # Clear the overlay
-            self._update_overlay('', False)
+            # Clear the overlay via API
+            self._call_api({'clear': 'true', 'enabled': 'false'})
 
             logger.debug("[Overlay] Hidden")
 
@@ -140,57 +179,39 @@ class NotificationOverlay:
                 return
 
             self._current_text = text
-            self._update_overlay(text, True)
 
-    def _update_overlay(self, text: str, background: bool):
-        """Update the GStreamer textoverlay elements (video and blocking paths)."""
-        if not self.ad_blocker:
-            logger.warning("[Overlay] No ad_blocker available")
-            return
+            # Update via API
+            params = {
+                'text': text,
+                'position': self._api_position,
+                'scale': self._scale,
+                'enabled': 'true',
+                'bg_enabled': 'true',
+                'bg_alpha': self._bg_alpha,
+            }
+            self._call_api(params)
 
-        try:
-            text_to_set = text if text else ''
-
-            # Set text on video path notification overlay
-            overlay_video = getattr(self.ad_blocker, 'notificationoverlay', None)
-            if overlay_video:
-                overlay_video.set_property('text', text_to_set)
-
-            # Set text on blocking path notification overlay
-            overlay_block = getattr(self.ad_blocker, 'notificationoverlay_block', None)
-            if overlay_block:
-                overlay_block.set_property('text', text_to_set)
-
-            if overlay_video or overlay_block:
-                logger.debug(f"[Overlay] Set notification text: {text[:30] if text else 'cleared'}...")
-            else:
-                logger.warning("[Overlay] No notification overlay elements found in pipeline")
-
-        except Exception as e:
-            logger.error(f"[Overlay] Error updating: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def _show_via_textoverlay(self, text: str, background: bool):
+    def set_position(self, position: str):
         """
-        Show notification using the pipeline's textoverlay.
+        Change overlay position.
 
-        This is a fallback when no dedicated notification overlay exists.
-        We position text in the corner using textoverlay properties.
+        Args:
+            position: One of 'top-left', 'top-right', 'bottom-left', 'bottom-right', 'center'
         """
-        if not self.ad_blocker:
-            return
+        self.position = position
+        self._api_position = self._POS_MAP.get(position, 1)
 
-        # Check if we have a dedicated notification overlay in the pipeline
-        # If not, we need to work with what we have
+        # Update position if currently visible
+        if self._visible and self._current_text:
+            self.show(self._current_text)
 
-        # For now, we'll use a simple approach: store the notification
-        # and let the debug overlay include it
-        self.ad_blocker._notification_text = text if text else None
+    def set_scale(self, scale: int):
+        """Set text scale factor (1-10)."""
+        self._scale = max(1, min(10, scale))
 
-        # Force debug overlay update to show notification
-        if hasattr(self.ad_blocker, '_notification_text'):
-            logger.debug(f"[Overlay] Set notification text: {text[:30] if text else 'None'}...")
+    def set_background_alpha(self, alpha: int):
+        """Set background transparency (0-255, 255=opaque)."""
+        self._bg_alpha = max(0, min(255, alpha))
 
     @property
     def is_visible(self) -> bool:
@@ -211,6 +232,12 @@ class NotificationOverlay:
             self._visible = False
             self._current_text = None
 
+        # Clear overlay on destroy
+        try:
+            self._call_api({'clear': 'true', 'enabled': 'false'})
+        except:
+            pass
+
 
 class FireTVNotification(NotificationOverlay):
     """
@@ -221,27 +248,29 @@ class FireTVNotification(NotificationOverlay):
     authorize the connection.
     """
 
-    def __init__(self, ad_blocker=None):
-        super().__init__(ad_blocker, position=NotificationOverlay.POSITION_TOP_RIGHT)
+    def __init__(self, ustreamer_port: int = 9090):
+        super().__init__(ustreamer_port=ustreamer_port, position=NotificationOverlay.POS_TOP_RIGHT)
+        # Use slightly smaller scale for Fire TV notifications
+        self._scale = 2
 
     def show_scanning(self):
         """Show 'Scanning for Fire TV...' notification."""
-        text = "🔍 Scanning for Fire TV..."
+        text = "Scanning for Fire TV..."
         self.show(text, duration=None)
 
     def show_adb_enable_instructions(self, timeout_remaining: int = None):
         """Show instructions for enabling ADB debugging."""
         lines = [
-            "📺 Fire TV Setup",
+            "Fire TV Setup",
             "",
             "Enable ADB Debugging:",
-            "1. Settings → My Fire TV",
+            "1. Settings > My Fire TV",
             "2. Developer Options",
-            "3. Turn ON 'ADB Debugging'",
+            "3. Turn ON ADB Debugging",
         ]
 
         if timeout_remaining is not None:
-            lines.append(f"")
+            lines.append("")
             lines.append(f"Scanning... ({timeout_remaining}s)")
 
         text = "\n".join(lines)
@@ -250,19 +279,19 @@ class FireTVNotification(NotificationOverlay):
     def show_auth_instructions(self, ip_address: str = None, attempt: int = None, timeout_remaining: int = None):
         """Show instructions for authorizing ADB connection."""
         lines = [
-            "📺 Fire TV Found!",
+            "Fire TV Found!",
             "",
-            "On your TV, press 'Allow'",
+            "On your TV, press Allow",
             "on the USB Debugging dialog.",
             "",
-            "✓ Check 'Always allow'",
+            "Check: Always allow",
         ]
 
         if ip_address:
             lines.insert(1, f"IP: {ip_address}")
 
         if attempt is not None and timeout_remaining is not None:
-            lines.append(f"")
+            lines.append("")
             lines.append(f"Attempt {attempt}... ({timeout_remaining}s)")
 
         text = "\n".join(lines)
@@ -270,12 +299,12 @@ class FireTVNotification(NotificationOverlay):
 
     def show_connected(self, device_name: str = "Fire TV"):
         """Show connection success notification."""
-        text = f"✓ {device_name} Connected!\n\nAd skipping enabled."
+        text = f"{device_name} Connected!\n\nAd skipping enabled."
         self.show(text, duration=5.0)  # Auto-hide after 5s
 
     def show_failed(self, reason: str = "Connection failed"):
         """Show connection failure notification."""
-        text = f"✗ {reason}\n\nFire TV skipping disabled."
+        text = f"{reason}\n\nFire TV skipping disabled."
         self.show(text, duration=10.0)  # Auto-hide after 10s
 
     def show_skipped(self):

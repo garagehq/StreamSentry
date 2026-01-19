@@ -865,7 +865,8 @@ class Minus:
             logger.info("[FireTV] Initializing Fire TV setup manager...")
             self.fire_tv_setup = FireTVSetupManager(
                 ad_blocker=self.ad_blocker,
-                ocr_worker=self.ocr
+                ocr_worker=self.ocr,
+                ustreamer_port=self.config.ustreamer_port
             )
 
             # Set callbacks
