@@ -75,6 +75,8 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | `src/vlm.py` | Qwen3-VL-2B on Axera NPU |
 | `src/health.py` | Unified health monitor for all subsystems |
 | `src/webui.py` | Flask web UI for remote monitoring/control |
+| `src/fire_tv.py` | Fire TV ADB remote control for ad skipping |
+| `test_fire_tv.py` | Fire TV controller test and interactive remote |
 | `src/templates/index.html` | Web UI single-page app |
 | `src/static/style.css` | Web UI dark theme styles |
 | `install.sh` | Install as systemd service |
@@ -347,7 +349,7 @@ cd /home/radxa/ustreamer-garagehq && make WITH_MPP=1
 cp ustreamer /home/radxa/ustreamer-patched
 
 # Python
-pip3 install --break-system-packages pyclipper shapely numpy opencv-python pexpect PyGObject flask requests
+pip3 install --break-system-packages pyclipper shapely numpy opencv-python pexpect PyGObject flask requests androidtv
 ```
 
 ## Troubleshooting
@@ -514,6 +516,85 @@ Minus automatically collects training data for future VLM improvements:
 4. Use collected screenshots to fine-tune VLM:
    - `screenshots/ocr/*.png` → label as "ad"
    - `screenshots/non_ad/*.png` → label as "not_ad"
+
+## Fire TV Remote Control
+
+Minus can control Fire TV devices over WiFi via ADB for ad skipping and playback control.
+
+**Features:**
+- Auto-discovery of Fire TV devices on local network
+- Verification that discovered device is actually a Fire TV
+- ADB key generation and persistent storage for pairing
+- Auto-reconnect on connection drops
+- Full remote control: play, pause, select, back, d-pad, etc.
+- Async-compatible interface
+
+**Requirements:**
+- Fire TV must have ADB debugging enabled
+- First connection requires approving RSA key on TV screen
+- Both devices must be on the same WiFi network
+
+**Enabling ADB Debugging on Fire TV:**
+```
+1. Go to Settings (gear icon on home screen)
+2. Select "My Fire TV" (or "Device & Software")
+3. Select "Developer Options"
+   - If you don't see this: go to "About" → click on device name 7 times
+4. Turn ON "ADB Debugging"
+5. Note your IP address from Settings > My Fire TV > About > Network
+```
+
+**Testing:**
+```bash
+# Auto-discover and connect
+python3 test_fire_tv.py
+
+# Guided setup with instructions
+python3 test_fire_tv.py --setup
+
+# Connect to specific IP
+python3 test_fire_tv.py 192.168.1.100
+
+# Interactive remote control
+python3 test_fire_tv.py --interactive
+
+# Just scan for ADB devices
+python3 test_fire_tv.py --scan
+```
+
+**Available Commands:**
+| Category | Commands |
+|----------|----------|
+| Navigation | up, down, left, right, select, back, home, menu |
+| Media | play, pause, play_pause, stop, fast_forward, rewind |
+| Volume | volume_up, volume_down, mute |
+| Power | power, sleep, wakeup |
+
+**Usage in Code:**
+```python
+from src.fire_tv import FireTVController, quick_connect
+
+# Auto-discover and connect
+controller = quick_connect()
+
+# Or connect to specific IP
+controller = FireTVController()
+controller.connect("192.168.1.100")
+
+# Send commands
+controller.send_command("select")  # Press OK
+controller.skip_ad()               # Attempt to skip ad
+controller.go_back()               # Press back
+controller.get_current_app()       # Get current app name
+
+# Cleanup
+controller.disconnect()
+```
+
+**Troubleshooting:**
+- No devices found: Enable ADB debugging on Fire TV
+- Connection refused: ADB debugging not enabled or TV is asleep
+- Auth failed: Look at TV screen for authorization dialog
 
 ## Running as a Service
 
