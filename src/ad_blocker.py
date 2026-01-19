@@ -17,10 +17,19 @@ import random
 import logging
 import urllib.request
 import shutil
+from collections import deque
 
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
+
+# Try to import OpenCV for pixelation (fallback to basic method if not available)
+try:
+    import cv2
+    import numpy as np
+    HAS_OPENCV = True
+except ImportError:
+    HAS_OPENCV = False
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -199,6 +208,7 @@ class DRMAdBlocker:
         self.video_pad = None
         self.blocking_pad = None
         self.textoverlay = None
+        self.bgoverlay = None
         self.bus = None
 
         # Audio passthrough reference (set by minus)
@@ -262,6 +272,9 @@ class DRMAdBlocker:
         self._animating = False
         self._animation_source = None  # Store source during animation
 
+        # Test mode - when set, hide() is ignored until this timestamp
+        self._test_blocking_until = 0
+
         # Preview corner position/size (set in _init_pipeline, reused for animation)
         self._preview_corner_x = 0
         self._preview_corner_y = 0
@@ -271,9 +284,23 @@ class DRMAdBlocker:
         # Create initial placeholder preview image
         self._create_placeholder_preview()
 
+        # Pixelated background settings
+        self._pixelated_bg_path = "/tmp/minus_bg_pixelated.jpg"
+        self._snapshot_buffer = deque(maxlen=3)  # Keep 6 seconds of snapshots (at 2s intervals)
+        self._snapshot_buffer_thread = None
+        self._stop_snapshot_buffer = threading.Event()
+        self._snapshot_interval = 2.0  # Capture every 2 seconds
+        self._pixelation_factor = 20  # Downscale factor (higher = more pixelated)
+
+        # Create initial placeholder for pixelated background
+        self._create_placeholder_pixelated_bg()
+
         # Initialize GStreamer
         Gst.init(None)
         self._init_pipeline()
+
+        # Start the rolling snapshot buffer
+        self._start_snapshot_buffer()
 
     def _init_pipeline(self):
         """Initialize GStreamer pipeline with input-selector for instant switching."""
@@ -322,10 +349,17 @@ class DRMAdBlocker:
                 f"videobalance saturation=0.85 name=colorbalance ! "
                 f"queue max-size-buffers=3 leaky=downstream name=videoqueue ! sel.sink_0 "
 
-                # Blocking input (sink_1) - black screen with text + small preview image in corner
-                # Uses gdkpixbufoverlay to show a periodically-updated preview image
+                # Blocking input (sink_1) - pixelated background + live preview + text overlays
+                # Layer order (bottom to top):
+                # 1. videotestsrc (black base)
+                # 2. bgoverlay (pixelated background from ~2s before ad - full screen)
+                # 3. previewoverlay (live preview - corner)
+                # 4. blocktext (Spanish vocabulary - center)
+                # 5. debugtext (stats - bottom-left)
                 f"videotestsrc pattern=2 is-live=true ! "
                 f"video/x-raw,format=NV12,width={self.output_width},height={self.output_height},framerate=30/1 ! "
+                f"gdkpixbufoverlay name=bgoverlay location={self._pixelated_bg_path} "
+                f"offset-x=0 offset-y=0 overlay-width={self.output_width} overlay-height={self.output_height} ! "
                 f"gdkpixbufoverlay name=previewoverlay location=/tmp/minus_preview.jpg "
                 f"offset-x={preview_x} offset-y={preview_y} overlay-width={preview_w} overlay-height={preview_h} ! "
                 f"textoverlay name=blocktext text='BLOCKING AD' font-desc='Sans Bold {font_size}' "
@@ -346,6 +380,7 @@ class DRMAdBlocker:
             self.textoverlay = self.pipeline.get_by_name('blocktext')
             self.previewoverlay = self.pipeline.get_by_name('previewoverlay')
             self.debugoverlay = self.pipeline.get_by_name('debugtext')
+            self.bgoverlay = self.pipeline.get_by_name('bgoverlay')
 
             # Set debug overlay font size explicitly (must be done after element creation)
             if self.debugoverlay:
@@ -528,6 +563,7 @@ class DRMAdBlocker:
                 self.video_pad = None
                 self.blocking_pad = None
                 self.textoverlay = None
+                self.bgoverlay = None
 
             # Wait with exponential backoff
             time.sleep(delay)
@@ -777,6 +813,176 @@ class DRMAdBlocker:
         except Exception as e:
             logger.warning(f"[DRMAdBlocker] Failed to create placeholder preview: {e}")
 
+    def _create_placeholder_pixelated_bg(self):
+        """Create a placeholder pixelated background image (dark gray)."""
+        try:
+            if HAS_OPENCV:
+                # Create a dark gray image matching output resolution
+                img = np.full((self.output_height, self.output_width, 3), 30, dtype=np.uint8)
+                cv2.imwrite(self._pixelated_bg_path, img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                logger.debug(f"[DRMAdBlocker] Created placeholder pixelated background at {self._pixelated_bg_path}")
+            else:
+                # Copy the placeholder preview as fallback
+                shutil.copy(self._preview_path, self._pixelated_bg_path)
+        except Exception as e:
+            logger.warning(f"[DRMAdBlocker] Failed to create placeholder pixelated background: {e}")
+            # Copy the placeholder preview as fallback
+            try:
+                shutil.copy(self._preview_path, self._pixelated_bg_path)
+            except:
+                pass
+
+    def _start_snapshot_buffer(self):
+        """Start the rolling snapshot buffer thread."""
+        self._stop_snapshot_buffer.clear()
+        self._snapshot_buffer_thread = threading.Thread(
+            target=self._snapshot_buffer_loop,
+            daemon=True,
+            name="SnapshotBuffer"
+        )
+        self._snapshot_buffer_thread.start()
+        logger.debug("[DRMAdBlocker] Snapshot buffer thread started")
+
+    def _stop_snapshot_buffer_thread(self):
+        """Stop the snapshot buffer thread."""
+        self._stop_snapshot_buffer.set()
+        if self._snapshot_buffer_thread:
+            self._snapshot_buffer_thread.join(timeout=2.0)
+            self._snapshot_buffer_thread = None
+
+    def _snapshot_buffer_loop(self):
+        """Background thread to continuously capture snapshots into rolling buffer."""
+        logger.debug("[DRMAdBlocker] Snapshot buffer loop started")
+
+        while not self._stop_snapshot_buffer.is_set():
+            try:
+                # Fetch snapshot from ustreamer
+                url = f"http://localhost:{self.ustreamer_port}/snapshot"
+                with urllib.request.urlopen(url, timeout=2) as response:
+                    snapshot_data = response.read()
+
+                # Store in rolling buffer with timestamp
+                self._snapshot_buffer.append({
+                    'data': snapshot_data,
+                    'time': time.time()
+                })
+
+            except Exception as e:
+                logger.debug(f"[DRMAdBlocker] Snapshot buffer capture error: {e}")
+
+            # Wait before next capture
+            self._stop_snapshot_buffer.wait(self._snapshot_interval)
+
+        logger.debug("[DRMAdBlocker] Snapshot buffer loop stopped")
+
+    def _get_snapshot_from_buffer(self, seconds_ago=2.0):
+        """Get a snapshot from the buffer that's approximately N seconds old.
+
+        Args:
+            seconds_ago: How many seconds ago the snapshot should be from
+
+        Returns:
+            JPEG bytes or None if no suitable snapshot found
+        """
+        if not self._snapshot_buffer:
+            return None
+
+        target_time = time.time() - seconds_ago
+
+        # Find the snapshot closest to the target time
+        best_snapshot = None
+        best_diff = float('inf')
+
+        for snapshot in self._snapshot_buffer:
+            diff = abs(snapshot['time'] - target_time)
+            if diff < best_diff:
+                best_diff = diff
+                best_snapshot = snapshot
+
+        if best_snapshot:
+            return best_snapshot['data']
+
+        return None
+
+    def _pixelate_image(self, jpeg_data, factor=None):
+        """Pixelate a JPEG image by downscaling and upscaling.
+
+        Args:
+            jpeg_data: JPEG bytes
+            factor: Pixelation factor (higher = more pixelated). Default uses instance setting.
+
+        Returns:
+            Pixelated JPEG bytes or None on error
+        """
+        if not HAS_OPENCV:
+            logger.warning("[DRMAdBlocker] OpenCV not available for pixelation")
+            return None
+
+        factor = factor or self._pixelation_factor
+
+        try:
+            # Decode JPEG
+            nparr = np.frombuffer(jpeg_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if img is None:
+                return None
+
+            h, w = img.shape[:2]
+
+            # Downscale
+            small_w = max(1, w // factor)
+            small_h = max(1, h // factor)
+            small = cv2.resize(img, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
+
+            # Upscale back to original size (nearest neighbor for blocky look)
+            pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+
+            # Darken the image slightly to make text more readable (multiply by 0.6)
+            pixelated = (pixelated * 0.6).astype(np.uint8)
+
+            # Encode back to JPEG
+            _, encoded = cv2.imencode('.jpg', pixelated, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            return encoded.tobytes()
+
+        except Exception as e:
+            logger.error(f"[DRMAdBlocker] Pixelation error: {e}")
+            return None
+
+    def _prepare_pixelated_background(self):
+        """Prepare the pixelated background image from the rolling buffer.
+
+        Gets the oldest snapshot from the buffer (~6 seconds ago), pixelates it, and saves to disk.
+        This ensures the background shows content from before the ad appeared.
+        """
+        # Get the oldest snapshot from buffer (first item = oldest)
+        snapshot_data = None
+        if self._snapshot_buffer:
+            snapshot_data = self._snapshot_buffer[0]['data']  # Oldest snapshot
+
+        if not snapshot_data:
+            logger.debug("[DRMAdBlocker] No snapshot available for pixelated background")
+            return False
+
+        # Pixelate the image
+        pixelated_data = self._pixelate_image(snapshot_data)
+
+        if not pixelated_data:
+            logger.debug("[DRMAdBlocker] Failed to pixelate snapshot")
+            return False
+
+        # Save to disk
+        try:
+            temp_path = self._pixelated_bg_path + ".tmp"
+            with open(temp_path, 'wb') as f:
+                f.write(pixelated_data)
+            os.rename(temp_path, self._pixelated_bg_path)
+            logger.debug("[DRMAdBlocker] Prepared pixelated background")
+            return True
+        except Exception as e:
+            logger.error(f"[DRMAdBlocker] Failed to save pixelated background: {e}")
+            return False
+
     def _preview_loop(self):
         """Background thread to periodically update the preview image from ustreamer."""
         logger.debug("[DRMAdBlocker] Preview update thread started")
@@ -979,6 +1185,24 @@ class DRMAdBlocker:
         """
         return (self._skip_available, self._skip_text)
 
+    def set_test_mode(self, duration_seconds: float):
+        """Enable test mode - blocks hide() for specified duration.
+
+        Args:
+            duration_seconds: How long to ignore hide() calls
+        """
+        self._test_blocking_until = time.time() + duration_seconds
+        logger.info(f"[DRMAdBlocker] Test mode enabled for {duration_seconds}s")
+
+    def clear_test_mode(self):
+        """Clear test mode, allowing normal hide() behavior."""
+        self._test_blocking_until = 0
+        logger.info("[DRMAdBlocker] Test mode cleared")
+
+    def is_test_mode_active(self) -> bool:
+        """Check if test mode is currently active."""
+        return self._test_blocking_until > time.time()
+
     # Animation methods
     def _ease_out(self, t):
         """Ease-out function: fast start, slow finish (quadratic)."""
@@ -1159,6 +1383,15 @@ class DRMAdBlocker:
 
             logger.info(f"[DRMAdBlocker] Starting blocking animation ({source})")
 
+            # Prepare pixelated background from snapshot buffer (~2 seconds ago)
+            if self._prepare_pixelated_background():
+                logger.debug("[DRMAdBlocker] Pixelated background prepared")
+                # Trigger bgoverlay to reload the new pixelated background
+                if self.bgoverlay:
+                    self.bgoverlay.set_property('location', self._pixelated_bg_path)
+            else:
+                logger.debug("[DRMAdBlocker] Using placeholder pixelated background")
+
             # Capture current frame for animation (update preview image first)
             try:
                 url = f"http://localhost:{self.ustreamer_port}/snapshot"
@@ -1203,9 +1436,18 @@ class DRMAdBlocker:
             # Start animation (will trigger _on_start_animation_complete when done)
             self._start_animation('start', source)
 
-    def hide(self):
-        """Switch back to video stream with animation."""
+    def hide(self, force=False):
+        """Switch back to video stream with animation.
+
+        Args:
+            force: If True, ignore test mode and hide anyway
+        """
+        # Check test mode BEFORE acquiring lock to avoid any race conditions
+        if not force and self._test_blocking_until > time.time():
+            return  # Silently ignore - test mode active
+
         with self._lock:
+
             # Always update visibility state first, even if pipeline is unavailable
             # This ensures _restart_pipeline() doesn't restore blocking when it shouldn't
             was_visible = self.is_visible
@@ -1287,6 +1529,9 @@ class DRMAdBlocker:
 
             # Stop animation thread
             self._stop_animation_thread()
+
+            # Stop snapshot buffer thread
+            self._stop_snapshot_buffer_thread()
 
             if self.pipeline:
                 try:

@@ -1381,10 +1381,11 @@ class Minus:
                     self.ad_blocker.hide()
 
             # Also control audio based on blocking state (same logic)
+            # But respect ad_blocker test mode - don't unmute during tests
             if self.audio:
                 if should_show_blocking:
                     self.audio.mute()
-                else:
+                elif not (self.ad_blocker and self.ad_blocker.is_test_mode_active()):
                     self.audio.unmute()
 
     def ml_worker(self):

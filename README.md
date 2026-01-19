@@ -22,6 +22,7 @@ Minus captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, w
 - **30fps display** - Smooth passthrough without stutter
 - **Set and forget** - systemd service, health monitoring, automatic recovery
 - **Fire TV control** - Auto-skip ads via ADB remote control (optional)
+- **Text overlay API** - Dynamic on-screen notifications via ustreamer
 
 ```
 ┌──────────────┐     ┌────────────────────┐     ┌─────────────────────┐
@@ -126,6 +127,7 @@ python3 minus.py --check-signal
 ## Blocking Overlay
 
 When ads are detected, the screen shows:
+- **Pixelated Background**: Blurred/pixelated version of the screen from ~6 seconds before the ad
 - **Header**: `BLOCKING (OCR)`, `BLOCKING (VLM)`, or `BLOCKING (OCR+VLM)`
 - **Spanish word**: Random intermediate-level vocabulary
 - **Translation**: English meaning
@@ -133,6 +135,9 @@ When ads are detected, the screen shows:
 - **Rotation**: New vocabulary every 11-15 seconds
 - **Ad Preview**: Live preview of blocked ad in bottom-right corner (~4fps)
 - **Debug Dashboard**: Stats in bottom-left (uptime, ads blocked, block time)
+
+**Pixelated Background:**
+Instead of a plain black background, the blocking overlay shows a heavily pixelated and darkened version of what was on screen before the ad appeared. This provides visual context while clearly indicating blocking is active. The system maintains a rolling 6-second buffer of snapshots (captured every 2 seconds) and uses the oldest frame when blocking starts.
 
 **Smooth Transitions:**
 - **Start blocking**: 1.5s animation - ad shrinks from full-screen to corner preview
@@ -210,8 +215,9 @@ minus/
 │   ├── audio.py          # GStreamer audio passthrough with mute control
 │   ├── health.py         # Health monitor for all subsystems
 │   ├── webui.py          # Flask web UI server
+│   ├── overlay.py        # Text overlay via ustreamer API
 │   ├── fire_tv.py        # Fire TV ADB controller
-│   ├── fire_tv_setup.py  # Fire TV setup flow with visual guidance
+│   ├── fire_tv_setup.py  # Fire TV setup flow with overlay notifications
 │   ├── templates/
 │   │   └── index.html    # Web UI single-page app
 │   └── static/
@@ -252,6 +258,8 @@ Model location:
 ## Fire TV Control (Optional)
 
 Minus can control Fire TV devices via ADB over WiFi to automatically skip ads.
+
+**Auto-Setup:** When Minus starts, it automatically scans for Fire TV devices and guides you through setup with on-screen overlay notifications. First-time connection requires approving the ADB authorization dialog on your TV.
 
 **Requirements:**
 - Fire TV on the same WiFi network
@@ -436,6 +444,66 @@ to `screenshots/non_ad/`. This creates training data for improving the VLM:
 - **Pausing = "this is NOT an ad"** (false positive correction)
 - Screenshots saved with `non_ad_` prefix for easy labeling
 - Use these to fine-tune the VLM and reduce false positives
+
+**Test API Endpoints:**
+For development and testing, you can manually trigger ad blocking:
+```bash
+# Trigger blocking for 20 seconds (source: ocr, vlm, both, or default)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"duration": 20, "source": "ocr"}' \
+  http://localhost:8080/api/test/trigger-block
+
+# Stop blocking immediately
+curl -X POST http://localhost:8080/api/test/stop-block
+```
+
+Test mode prevents the detection loop from canceling the blocking, allowing you to test the full blocking experience including pixelated background and animations.
+
+## Text Overlay API
+
+Minus includes a text overlay system that renders text directly on the video stream via ustreamer's MPP hardware encoder. This is used for Fire TV setup guidance and can be used for custom notifications.
+
+**API Endpoints:**
+- `GET http://localhost:9090/overlay` - Get current overlay configuration
+- `GET http://localhost:9090/overlay/set?params` - Set overlay configuration
+
+**Parameters:**
+| Parameter | Description |
+|-----------|-------------|
+| `text` | Text to display (URL-encoded, supports newlines with `%0A`) |
+| `enabled` | `true` to enable, `false` to disable |
+| `position` | 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right, 4=center |
+| `scale` | Text scale factor (1-10, default: 3) |
+| `color_y`, `color_u`, `color_v` | Text color in YUV (default: white) |
+| `bg_enabled` | Enable background box (default: true) |
+| `bg_alpha` | Background transparency 0-255 (default: 180) |
+| `clear` | Set to `true` to clear overlay |
+
+**Example Usage:**
+```bash
+# Show "LIVE" in top-right corner
+curl "http://localhost:9090/overlay/set?text=LIVE&position=1&scale=4&enabled=true"
+
+# Show multi-line text
+curl "http://localhost:9090/overlay/set?text=Line%201%0ALine%202&position=0&enabled=true"
+
+# Clear overlay
+curl "http://localhost:9090/overlay/set?clear=true"
+```
+
+**Python Usage:**
+```python
+from src.overlay import NotificationOverlay
+
+overlay = NotificationOverlay(ustreamer_port=9090)
+overlay.show("Hello World", duration=5.0)  # Auto-hides after 5 seconds
+overlay.hide()  # Manual hide
+```
+
+**Performance:**
+- ~0.5ms overhead per frame
+- Rendered directly on NV12 frames before JPEG encoding
+- No GStreamer pipeline modifications needed
 
 ## Housekeeping
 

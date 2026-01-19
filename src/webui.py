@@ -197,6 +197,67 @@ class WebUI:
                 logger.error(f"Error disabling debug overlay: {e}")
                 return jsonify({'error': str(e)}), 500
 
+        @self.app.route('/api/test/trigger-block', methods=['POST'])
+        def api_test_trigger_block():
+            """Trigger ad blocking for testing.
+
+            Optional JSON body:
+            - duration: seconds to block (default: 10, max: 60)
+            - source: detection source ('ocr', 'vlm', 'both', 'default')
+            """
+            try:
+                data = request.get_json() or {}
+                duration = min(60, max(1, data.get('duration', 10)))
+                source = data.get('source', 'ocr')
+
+                if source not in ('ocr', 'vlm', 'both', 'default'):
+                    source = 'ocr'
+
+                if self.minus.ad_blocker:
+                    # Enable test mode to prevent detection loop from hiding
+                    self.minus.ad_blocker.set_test_mode(duration)
+
+                    # Show blocking overlay
+                    self.minus.ad_blocker.show(source)
+
+                    # Schedule auto-hide after duration
+                    def auto_hide():
+                        time.sleep(duration)
+                        if self.minus.ad_blocker:
+                            self.minus.ad_blocker.clear_test_mode()
+                            self.minus.ad_blocker.hide(force=True)
+                            logger.info(f"[WebUI] Test blocking ended after {duration}s")
+
+                    threading.Thread(target=auto_hide, daemon=True).start()
+
+                    logger.info(f"[WebUI] Test blocking triggered: source={source}, duration={duration}s")
+                    return jsonify({
+                        'success': True,
+                        'source': source,
+                        'duration': duration,
+                        'message': f'Blocking for {duration} seconds'
+                    })
+                else:
+                    return jsonify({'error': 'Ad blocker not initialized'}), 500
+            except Exception as e:
+                logger.error(f"Error triggering test block: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/test/stop-block', methods=['POST'])
+        def api_test_stop_block():
+            """Stop ad blocking (for testing)."""
+            try:
+                if self.minus.ad_blocker:
+                    self.minus.ad_blocker.clear_test_mode()
+                    self.minus.ad_blocker.hide(force=True)
+                    logger.info("[WebUI] Test blocking stopped")
+                    return jsonify({'success': True})
+                else:
+                    return jsonify({'error': 'Ad blocker not initialized'}), 500
+            except Exception as e:
+                logger.error(f"Error stopping test block: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/stream')
         def stream_proxy():
             """Proxy the MJPEG stream from ustreamer (for CORS bypass)."""

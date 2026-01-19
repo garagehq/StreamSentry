@@ -267,12 +267,22 @@ v4l2-ctl -d /dev/video0 --get-ctrl audio_present
 ## Blocking Overlay
 
 When ads are detected, the screen shows:
+- **Pixelated Background**: Blurred/pixelated version of the screen from ~6 seconds before the ad
 - **Header**: `BLOCKING (OCR)`, `BLOCKING (VLM)`, or `BLOCKING (OCR+VLM)`
 - **Spanish vocabulary**: Random intermediate-level word with translation
 - **Example sentence**: Shows the word in context
 - **Rotation**: New vocabulary every 11-15 seconds
 - **Ad Preview Window**: Live preview of the blocked ad in bottom-right corner (~4fps)
 - **Debug Dashboard**: Stats overlay in bottom-left corner (uptime, ads blocked, block time)
+
+**Pixelated Background:**
+Instead of a plain black background, the blocking overlay shows a heavily pixelated (20x downscale) and darkened (60% brightness) version of what was on screen before the ad appeared. This provides visual context while clearly indicating blocking is active.
+
+Implementation (`src/ad_blocker.py`):
+- Rolling 6-second snapshot buffer (3 frames at 2-second intervals)
+- Uses oldest frame when blocking starts (ensures pre-ad content)
+- OpenCV pixelation: downscale by 20x, upscale with INTER_NEAREST
+- Saved to `/tmp/minus_bg_pixelated.jpg` and loaded via `gdkpixbufoverlay`
 
 **Transition Animations (1.5s):**
 - **Start blocking**: Ad video shrinks from full-screen to corner preview (ease-out)
@@ -542,10 +552,30 @@ accessible via Tailscale from desktop or mobile devices.
 │  GET /api/debug-overlay    → Get debug overlay state        │
 │  POST /api/debug-overlay/enable  → Enable debug dashboard   │
 │  POST /api/debug-overlay/disable → Disable debug dashboard  │
+│  POST /api/test/trigger-block    → Trigger test blocking    │
+│  POST /api/test/stop-block       → Stop test blocking       │
 │  GET /stream        → Proxy to ustreamer:9090/stream        │
 │  GET /snapshot      → Proxy to ustreamer:9090/snapshot      │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Test API Endpoints:**
+For development and testing ad blocking without waiting for real ads:
+```bash
+# Trigger blocking for 20 seconds (max 60)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"duration": 20, "source": "ocr"}' \
+  http://localhost:8080/api/test/trigger-block
+
+# Stop blocking immediately
+curl -X POST http://localhost:8080/api/test/stop-block
+```
+
+Parameters for trigger-block:
+- `duration`: seconds to block (default: 10, max: 60)
+- `source`: detection source - 'ocr', 'vlm', 'both', or 'default'
+
+Test mode prevents the detection loop from canceling the blocking, allowing full testing of pixelated background, animations, and audio muting.
 
 **Access URLs:**
 - Local: `http://localhost:8080`
