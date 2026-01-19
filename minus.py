@@ -142,6 +142,14 @@ except ImportError as e:
     logger.warning(f"WebUI module not available: {e}")
     HAS_WEBUI = False
 
+# Import Fire TV Setup Manager
+try:
+    from fire_tv_setup import FireTVSetupManager
+    HAS_FIRE_TV = True
+except ImportError as e:
+    logger.warning(f"Fire TV module not available: {e}")
+    HAS_FIRE_TV = False
+
 
 def probe_drm_output() -> dict:
     """
@@ -509,6 +517,7 @@ class Minus:
         self.MIN_BLOCKING_DURATION = 3.0
         self.OCR_STOP_THRESHOLD = 3
         self.VLM_STOP_THRESHOLD = 2
+        self.SKIP_DELAY_SECONDS = 11.0  # Wait 11s after ad starts before attempting skip
 
         self._state_lock = threading.Lock()
 
@@ -549,6 +558,18 @@ class Minus:
         self.blocking_paused_until = 0  # Timestamp when pause expires
         from collections import deque
         self.detection_history = deque(maxlen=50)  # Recent detections for web UI
+
+        # Fire TV state
+        self.fire_tv_setup = None
+        self.fire_tv_controller = None
+        self._fire_tv_setup_thread = None
+
+        # Skip opportunity state
+        self.skip_available = False  # True when "Skip" button is ready (no countdown)
+        self.skip_countdown = None   # Countdown seconds if not yet skippable
+        self.last_skip_text = None   # The detected skip text
+        self.last_skip_time = 0      # When skip was last detected
+        self.skip_attempts = 0       # How many times we would have skipped
 
         # Probe DRM output to auto-detect connector, plane, resolution, and audio device
         if config.drm_connector_id is None or config.drm_plane_id is None or config.output_width is None or config.audio_playback_device is None:
@@ -826,6 +847,136 @@ class Minus:
         except Exception as e:
             logger.error(f"[Recovery] Error cleaning screenshots: {e}")
 
+    # ===== Fire TV Setup Methods =====
+
+    def _start_fire_tv_setup_delayed(self, delay_seconds: float = 15.0):
+        """Start Fire TV setup after a delay (to let display stabilize first)."""
+        if not HAS_FIRE_TV:
+            logger.info("[FireTV] Fire TV module not available")
+            return
+
+        def delayed_start():
+            logger.info(f"[FireTV] Waiting {delay_seconds}s before starting Fire TV setup...")
+            time.sleep(delay_seconds)
+
+            if not self.running:
+                return
+
+            logger.info("[FireTV] Initializing Fire TV setup manager...")
+            self.fire_tv_setup = FireTVSetupManager(
+                ad_blocker=self.ad_blocker,
+                ocr_worker=self.ocr
+            )
+
+            # Set callbacks
+            self.fire_tv_setup.set_callbacks(
+                on_state_change=self._on_fire_tv_state_change,
+                on_connected=self._on_fire_tv_connected
+            )
+
+            # Start the setup flow
+            self.fire_tv_setup.start_setup()
+
+        self._fire_tv_setup_thread = threading.Thread(
+            target=delayed_start,
+            daemon=True,
+            name="FireTVSetupDelay"
+        )
+        self._fire_tv_setup_thread.start()
+
+    def _on_fire_tv_state_change(self, new_state: str):
+        """Handle Fire TV setup state changes."""
+        logger.info(f"[FireTV] State changed to: {new_state}")
+
+        # If we're waiting for auth, hook into OCR to detect the dialog
+        if new_state == FireTVSetupManager.STATE_WAITING_AUTH:
+            logger.info("[FireTV] Waiting for ADB authorization - OCR will detect dialog")
+
+    def _on_fire_tv_connected(self, device_info: dict):
+        """Handle successful Fire TV connection."""
+        self.fire_tv_controller = self.fire_tv_setup.get_controller()
+
+        manufacturer = device_info.get('manufacturer', 'Fire TV')
+        model = device_info.get('model', '')
+        ip = device_info.get('ip', '')
+
+        logger.info(f"[FireTV] Connected to {manufacturer} {model} at {ip}")
+        logger.info("[FireTV] Ad skipping enabled - will send skip commands during ads")
+
+        # Add to detection history
+        self.add_detection('FireTV', [f"Connected to {manufacturer} {model}"])
+
+    def _check_ocr_for_fire_tv_dialog(self, ocr_results: list) -> bool:
+        """
+        Check OCR results for Fire TV ADB auth dialog.
+
+        This is called from the OCR worker when Fire TV is waiting for authorization.
+        If we detect the auth dialog, we can provide better guidance.
+
+        Returns:
+            True if auth dialog detected
+        """
+        if not self.fire_tv_setup:
+            return False
+
+        if self.fire_tv_setup.state != FireTVSetupManager.STATE_WAITING_AUTH:
+            return False
+
+        return self.fire_tv_setup.check_for_auth_dialog(ocr_results)
+
+    def try_skip_ad(self):
+        """Attempt to skip ad on Fire TV if connected."""
+        if self.fire_tv_controller and self.fire_tv_controller.is_connected():
+            try:
+                result = self.fire_tv_controller.skip_ad()
+                if result:
+                    logger.info("[FireTV] Sent skip command")
+                return result
+            except Exception as e:
+                logger.warning(f"[FireTV] Skip command failed: {e}")
+        return False
+
+    def check_skip_opportunity(self, all_texts: list) -> tuple:
+        """
+        Check OCR results for skippable "Skip" button (no countdown).
+
+        For YouTube ads:
+        - "Skip" alone = skippable NOW
+        - "Skip Ad" = skippable NOW
+        - "Skip 5" or "Skip Ad in 5" = NOT skippable (countdown active)
+
+        Args:
+            all_texts: List of detected text strings from OCR
+
+        Returns:
+            Tuple of (is_skippable, skip_text, countdown_seconds)
+            - is_skippable: True if skip button is ready to press
+            - skip_text: The detected skip-related text
+            - countdown_seconds: Countdown remaining (0 if skippable, >0 if countdown)
+        """
+        import re
+
+        for text in all_texts:
+            text_lower = text.lower().strip()
+
+            # Check for "Skip" with countdown number
+            # Patterns: "Skip 5", "Skip Ad in 5", "Skip in 5s", "Skip 10", etc.
+            countdown_match = re.search(r'skip\s*(?:ad\s*)?(?:in\s*)?(\d+)\s*s?', text_lower)
+            if countdown_match:
+                countdown = int(countdown_match.group(1))
+                return (False, text, countdown)
+
+            # Check for standalone "Skip" or "Skip Ad" (no number = skippable)
+            # Must be short text to avoid false positives like "Skip this step"
+            if re.search(r'^skip\s*(?:ad|ads)?$', text_lower) and len(text_lower) <= 10:
+                return (True, text, 0)
+
+            # Also check "Skip Ad" button variant
+            if text_lower in ['skip', 'skip ad', 'skip ads', 'skipad']:
+                return (True, text, 0)
+
+        return (False, None, None)
+
     # ===== Web UI Methods =====
 
     def pause_blocking(self, duration_seconds: int = 120):
@@ -920,6 +1071,16 @@ class Minus:
             'memory_percent': health_status.memory_percent if health_status else 0,
             'ustreamer_ok': health_status.ustreamer_responding if health_status else True,
             'video_ok': health_status.video_pipeline_ok if health_status else True,
+
+            # Skip status (Fire TV integration)
+            'skip_available': self.skip_available,
+            'skip_countdown': self.skip_countdown,
+            'skip_text': self.last_skip_text,
+            'skip_attempts': self.skip_attempts,
+
+            # Fire TV status
+            'fire_tv_connected': self.fire_tv_controller is not None and self.fire_tv_controller.is_connected() if self.fire_tv_controller else False,
+            'fire_tv_setup_state': self.fire_tv_setup.state if self.fire_tv_setup else None,
         }
 
     def _compare_frames(self, frame, prev_frame):
@@ -1177,6 +1338,9 @@ class Minus:
                     source_display = source.upper() if source != "both" else "OCR+VLM"
                     logger.warning(f"AD BLOCKING STARTED ({source_display})")
 
+                    # NOTE: Ad skipping is handled separately based on skip button detection
+                    # We only skip when "Skip" appears without countdown (handled in OCR worker)
+
             # While blocking
             elif self.ad_detected:
                 if self.ocr_ad_detected and self.vlm_ad_detected and self.blocking_source != "both":
@@ -1324,7 +1488,61 @@ class Minus:
                         continue
 
                 ocr_time = (time.time() - start_time) * 1000 - capture_time
+
+                # Check for Fire TV ADB authorization dialog (if waiting for auth)
+                if self.fire_tv_setup and ocr_results:
+                    # Convert OCR results to format expected by Fire TV checker
+                    ocr_text_list = ocr_results if ocr_results else []
+                    if self._check_ocr_for_fire_tv_dialog(ocr_text_list):
+                        logger.info("[FireTV] ADB authorization dialog detected on screen!")
+
                 ad_detected, matched_keywords, all_texts, is_terminal = self.ocr.check_ad_keywords(ocr_results)
+
+                # Check for skip opportunity (for Fire TV ad skipping)
+                # Only attempt skip after SKIP_DELAY_SECONDS since ad blocking started
+                is_skippable, skip_text, countdown = self.check_skip_opportunity(all_texts)
+
+                # Calculate time since ad blocking started
+                time_since_blocking = 0
+                if self.ad_detected and self.blocking_start_time > 0:
+                    time_since_blocking = time.time() - self.blocking_start_time
+
+                # Only allow skip after delay period (skip button never appears in first few seconds)
+                skip_delay_passed = time_since_blocking >= self.SKIP_DELAY_SECONDS
+
+                if is_skippable and skip_delay_passed:
+                    if not self.skip_available:
+                        self.skip_available = True
+                        self.last_skip_text = skip_text
+                        self.last_skip_time = time.time()
+                        self.skip_attempts += 1
+                        logger.warning(f"[SKIP] >>> SKIP BUTTON READY! Would skip now. Text: '{skip_text}' (attempt #{self.skip_attempts})")
+                        # Update overlay to show skip available
+                        if self.ad_blocker:
+                            self.ad_blocker.set_skip_status(True, skip_text)
+                    self.skip_countdown = 0
+                elif is_skippable and not skip_delay_passed:
+                    # Skip button visible but delay not passed yet
+                    wait_remaining = int(self.SKIP_DELAY_SECONDS - time_since_blocking)
+                    if wait_remaining > 0:
+                        logger.debug(f"[SKIP] Skip visible but waiting {wait_remaining}s more (delay: {self.SKIP_DELAY_SECONDS}s)")
+                        if self.ad_blocker:
+                            self.ad_blocker.set_skip_status(False, f"Wait {wait_remaining}s")
+                elif countdown is not None:
+                    self.skip_available = False
+                    self.skip_countdown = countdown
+                    self.last_skip_text = skip_text
+                    logger.info(f"[SKIP] Skip countdown: {countdown}s remaining. Text: '{skip_text}'")
+                    if self.ad_blocker:
+                        self.ad_blocker.set_skip_status(False, f"Skip in {countdown}s")
+                else:
+                    # No skip button detected
+                    if self.skip_available:
+                        logger.info("[SKIP] Skip button no longer visible")
+                    self.skip_available = False
+                    self.skip_countdown = None
+                    if self.ad_blocker:
+                        self.ad_blocker.set_skip_status(False, None)
 
                 if ad_detected and not is_terminal:
                     self.ocr_ad_detection_count += 1
@@ -1685,6 +1903,10 @@ class Minus:
                 logger.warning(f"Failed to start Web UI: {e}")
                 self.webui = None
 
+        # Start Fire TV setup early (runs in parallel with VLM loading)
+        # 5 second delay ensures display is stable before scanning
+        self._start_fire_tv_setup_delayed(delay_seconds=5.0)
+
         # Load VLM model (takes ~40s, so start after WebUI is up)
         if self.vlm:
             logger.info("Loading VLM model (Qwen3-VL-2B-INT4)...")
@@ -1732,7 +1954,13 @@ class Minus:
         logger.info("Stopping...")
         self.running = False
 
-        # Stop health monitor first
+        # Stop Fire TV setup first
+        if self.fire_tv_setup:
+            self.fire_tv_setup.destroy()
+            self.fire_tv_setup = None
+            self.fire_tv_controller = None
+
+        # Stop health monitor
         if self.health_monitor:
             self.health_monitor.stop()
 

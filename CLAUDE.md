@@ -76,6 +76,8 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | `src/health.py` | Unified health monitor for all subsystems |
 | `src/webui.py` | Flask web UI for remote monitoring/control |
 | `src/fire_tv.py` | Fire TV ADB remote control for ad skipping |
+| `src/fire_tv_setup.py` | Fire TV auto-setup flow (overlays disabled) |
+| `src/overlay.py` | Notification overlay module (disabled - pipeline issue) |
 | `test_fire_tv.py` | Fire TV controller test and interactive remote |
 | `src/templates/index.html` | Web UI single-page app |
 | `src/static/style.css` | Web UI dark theme styles |
@@ -372,6 +374,48 @@ pkill -9 ustreamer    # Kill orphaned ustreamer
 - Check DRM plane: `modetest -M rockchip -p | grep -A5 "plane\[72\]"`
 - Verify connector: `modetest -M rockchip -c | grep HDMI`
 
+## Known Issues / TODO
+
+### Notification Overlay on Video Path (BROKEN)
+
+**Problem:** Adding a `textoverlay` element to the video input path causes the pipeline to stall every ~12 seconds with "Video pipeline stalled" errors.
+
+**What was tried:**
+1. Adding textoverlay directly after mppjpegdec → Pipeline stalls (NV12 format not supported by textoverlay)
+2. Adding `videoconvert ! video/x-raw,format=I420 ! textoverlay ! videoconvert ! video/x-raw,format=NV12` → Still stalls
+3. Adding explicit width/height caps constraints → Format negotiation failure (`not-negotiated -4`)
+
+**Root cause:** The mppjpegdec outputs 4K NV12 (3840x2160) from ustreamer, but the display is 1080p. The caps filter tried to constrain to 1080p without a scaler, causing negotiation failure. Even with videoconvert, the CPU cost of converting 4K frames twice per frame is too high.
+
+**Current workaround:** Notification overlay disabled on video path. Notifications only show during blocking mode (on the blocking path, which uses videotestsrc at native resolution).
+
+**Potential solutions to investigate:**
+1. Use a separate DRM overlay plane for notifications (hardware compositing)
+2. Add text overlay in ustreamer itself (modify garagehq/ustreamer)
+3. Use videoscale to downscale before textoverlay, then back to NV12
+4. Use cairo/pango overlay with hardware acceleration
+
+**Files affected:**
+- `src/ad_blocker.py` - Pipeline definition
+- `src/overlay.py` - NotificationOverlay class (works, but can't attach to video path)
+- `src/fire_tv_setup.py` - Uses notification overlay for setup guidance
+
+### Fire TV Setup
+
+**Status:** Fire TV auto-setup is ENABLED. Notification overlays are disabled until pipeline fix.
+
+**Startup timing:**
+- Fire TV setup starts 5 seconds after service start (runs in parallel with VLM loading)
+- Total time from start to connection: ~13 seconds (5s delay + ~8s scan/connect)
+
+**Bug fixed:** Auth retry interval was 3 seconds, causing multiple auth dialogs on the TV before user could respond. Fixed to 35 seconds (longer than AUTH_TIMEOUT of 30s) in `fire_tv_setup.py`.
+
+**Files:**
+- `minus.py:1908` - `_start_fire_tv_setup_delayed(delay_seconds=5.0)`
+- `src/fire_tv_setup.py` - Setup manager (notification overlay disabled)
+- `src/fire_tv.py` - ADB controller
+- `src/overlay.py` - Notification overlay (not used until pipeline fix)
+
 ## Color Correction
 
 Color correction is done via GStreamer's `videobalance` element in the pipeline.
@@ -521,6 +565,8 @@ Minus automatically collects training data for future VLM improvements:
 
 Minus can control Fire TV devices over WiFi via ADB for ad skipping and playback control.
 
+**Auto-setup:** Fire TV is automatically discovered and connected 5 seconds after Minus starts. First-time connection requires approving the ADB authorization dialog on the TV screen (OCR detects when it appears). ADB keys are saved for future connections.
+
 **Features:**
 - Auto-discovery of Fire TV devices on local network
 - Verification that discovered device is actually a Fire TV
@@ -595,6 +641,57 @@ controller.disconnect()
 - No devices found: Enable ADB debugging on Fire TV
 - Connection refused: ADB debugging not enabled or TV is asleep
 - Auth failed: Look at TV screen for authorization dialog
+
+## Fire TV Setup Flow (Integrated with Minus)
+
+When Minus starts, it can automatically set up Fire TV control with visual guidance on the HDMI output.
+
+**Setup Manager (`src/fire_tv_setup.py`):**
+```python
+from src.fire_tv_setup import FireTVSetupManager
+
+# Create manager with ad_blocker for overlays
+setup_manager = FireTVSetupManager(ad_blocker=ad_blocker)
+
+# Start setup (non-blocking)
+setup_manager.start_setup()
+
+# Or blocking until complete
+setup_manager.start_setup(blocking=True)
+
+# Check if connected
+if setup_manager.is_connected():
+    controller = setup_manager.get_controller()
+    controller.skip_ad()
+
+# Skip setup
+setup_manager.skip_setup()
+```
+
+**Setup States:**
+| State | Description |
+|-------|-------------|
+| `idle` | Not doing anything |
+| `scanning` | Scanning network for Fire TV |
+| `waiting_adb_enable` | Showing instructions to enable ADB debugging |
+| `waiting_auth` | Waiting for user to authorize ADB connection |
+| `connected` | Successfully connected |
+| `skipped` | User skipped Fire TV setup |
+
+**Visual Guidance:**
+- **No Fire TV found**: Shows step-by-step instructions to enable ADB debugging
+- **Authorization required**: Shows instructions to press "Allow" on TV
+- **Connected**: Shows success message with device info
+
+**OCR Detection:**
+The setup manager can detect the ADB authorization dialog via OCR by looking for:
+- "Allow USB Debugging"
+- "RSA key fingerprint"
+- "Always allow from this computer"
+
+**Timeouts:**
+- ADB enable scan: 5 minutes (re-scans every 10 seconds)
+- Authorization: 2 minutes (retries every 3 seconds)
 
 ## Running as a Service
 

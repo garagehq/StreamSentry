@@ -251,6 +251,10 @@ class DRMAdBlocker:
         self._total_ads_blocked = 0  # Number of ad blocking sessions
         self.debugoverlay = None  # GStreamer text overlay element
 
+        # Skip status (for Fire TV integration)
+        self._skip_available = False  # True when skip button ready
+        self._skip_text = None  # Current skip status text
+
         # Animation settings
         self._animation_thread = None
         self._stop_animation = threading.Event()
@@ -883,6 +887,13 @@ class DRMAdBlocker:
             f"Ads blocked: {self._total_ads_blocked}\n"
             f"Block time: {block_time_str}"
         )
+
+        # Add skip status if available
+        if self._skip_available:
+            debug_text += f"\n>>> SKIP NOW! <<<"
+        elif self._skip_text:
+            debug_text += f"\n{self._skip_text}"
+
         return debug_text
 
     def _debug_loop(self):
@@ -948,6 +959,25 @@ class DRMAdBlocker:
                 self._stop_debug_thread()
                 if self.debugoverlay:
                     self.debugoverlay.set_property('text', '')
+
+    # Skip status methods (for Fire TV integration)
+    def set_skip_status(self, available: bool, text: str = None):
+        """Update skip button status for display.
+
+        Args:
+            available: True if skip button is ready (no countdown)
+            text: Skip status text (e.g., "Skip", "Skip in 5s")
+        """
+        self._skip_available = available
+        self._skip_text = text
+
+    def get_skip_status(self) -> tuple:
+        """Get current skip status.
+
+        Returns:
+            Tuple of (is_available, text)
+        """
+        return (self._skip_available, self._skip_text)
 
     # Animation methods
     def _ease_out(self, t):

@@ -21,6 +21,7 @@ Minus captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, w
 - **Spanish learning** - Practice vocabulary while ads are blocked
 - **30fps display** - Smooth passthrough without stutter
 - **Set and forget** - systemd service, health monitoring, automatic recovery
+- **Fire TV control** - Auto-skip ads via ADB remote control (optional)
 
 ```
 ┌──────────────┐     ┌────────────────────┐     ┌─────────────────────┐
@@ -201,6 +202,7 @@ Both preview window and debug dashboard are toggleable via Web UI Settings.
 minus/
 ├── minus.py              # Main entry point
 ├── minus.spec            # PyInstaller build spec
+├── test_fire_tv.py       # Fire TV controller test script
 ├── src/
 │   ├── ocr.py            # PaddleOCR on RKNN NPU
 │   ├── vlm.py            # Qwen3-VL-2B on Axera NPU
@@ -208,6 +210,8 @@ minus/
 │   ├── audio.py          # GStreamer audio passthrough with mute control
 │   ├── health.py         # Health monitor for all subsystems
 │   ├── webui.py          # Flask web UI server
+│   ├── fire_tv.py        # Fire TV ADB controller
+│   ├── fire_tv_setup.py  # Fire TV setup flow with visual guidance
 │   ├── templates/
 │   │   └── index.html    # Web UI single-page app
 │   └── static/
@@ -245,6 +249,42 @@ Model location:
 └── Qwen3-VL-2B-Instruct-AX650-c128_p1152-int4/
 ```
 
+## Fire TV Control (Optional)
+
+Minus can control Fire TV devices via ADB over WiFi to automatically skip ads.
+
+**Requirements:**
+- Fire TV on the same WiFi network
+- ADB debugging enabled on Fire TV
+
+**Enable ADB Debugging on Fire TV:**
+1. Go to **Settings** (gear icon)
+2. Select **My Fire TV**
+3. Select **Developer Options** (if not visible: go to About → click device name 7 times)
+4. Turn ON **ADB Debugging**
+
+**Test Fire TV Connection:**
+```bash
+# Auto-discover and connect
+python3 test_fire_tv.py
+
+# Guided setup with instructions
+python3 test_fire_tv.py --setup
+
+# Interactive remote control
+python3 test_fire_tv.py --interactive
+```
+
+**First Connection:**
+When connecting for the first time, your Fire TV will show an "Allow USB Debugging?" dialog.
+Look at your TV and press **Allow** (check "Always allow" for permanent authorization).
+
+**Available Commands:**
+- Navigation: up, down, left, right, select, back, home
+- Media: play, pause, play_pause, fast_forward, rewind
+- Volume: volume_up, volume_down, mute
+- Power: power, sleep, wakeup
+
 ## Dependencies
 
 ```bash
@@ -257,7 +297,7 @@ cd /home/radxa/ustreamer-garagehq && make WITH_MPP=1
 cp ustreamer /home/radxa/ustreamer-patched
 
 # Python packages
-pip3 install --break-system-packages pyclipper shapely numpy opencv-python pexpect PyGObject flask requests
+pip3 install --break-system-packages pyclipper shapely numpy opencv-python pexpect PyGObject flask requests androidtv
 ```
 
 ## Troubleshooting
