@@ -154,11 +154,12 @@ class DRMAdBlocker:
         self._current_block_start = None
         self._total_ads_blocked = 0
 
-        # Preview settings
+        # Preview settings - use actual capture resolution for positioning
         self._preview_enabled = True
-        self._preview_w = int(self.output_width * 0.20)
-        self._preview_h = int(self.output_height * 0.20)
-        self._preview_padding = int(self.output_height * 0.02)
+        self._frame_width, self._frame_height = self._detect_frame_resolution()
+        self._preview_w = int(self._frame_width * 0.20)
+        self._preview_h = int(self._frame_height * 0.20)
+        self._preview_padding = int(self._frame_height * 0.02)
 
         # Skip status
         self._skip_available = False
@@ -186,6 +187,20 @@ class DRMAdBlocker:
         Gst.init(None)
         self._init_pipeline()
         self._start_snapshot_buffer()
+
+    def _detect_frame_resolution(self):
+        """Detect actual capture frame resolution from ustreamer."""
+        try:
+            url = f"http://localhost:{self.ustreamer_port}/state"
+            with urllib.request.urlopen(url, timeout=2.0) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                width = data.get('result', {}).get('source', {}).get('resolution', {}).get('width', 1920)
+                height = data.get('result', {}).get('source', {}).get('resolution', {}).get('height', 1080)
+                logger.info(f"[DRMAdBlocker] Detected frame resolution: {width}x{height}")
+                return width, height
+        except Exception as e:
+            logger.warning(f"[DRMAdBlocker] Could not detect frame resolution: {e}, using 1920x1080")
+            return 1920, 1080
 
     def _blocking_api_call(self, endpoint, params=None, data=None, method='GET', timeout=0.1):
         """Make an API call to ustreamer blocking endpoint."""
@@ -274,11 +289,26 @@ class DRMAdBlocker:
 
             logger.info("[DRMAdBlocker] Pipeline started")
             self._start_watchdog()
+
+            # Re-detect frame resolution now that ustreamer should be running
+            self._update_frame_resolution()
+
             return True
 
         except Exception as e:
             logger.error(f"[DRMAdBlocker] Failed to start pipeline: {e}")
             return False
+
+    def _update_frame_resolution(self):
+        """Update frame resolution and recalculate preview dimensions."""
+        new_w, new_h = self._detect_frame_resolution()
+        if new_w != self._frame_width or new_h != self._frame_height:
+            self._frame_width = new_w
+            self._frame_height = new_h
+            self._preview_w = int(self._frame_width * 0.20)
+            self._preview_h = int(self._frame_height * 0.20)
+            self._preview_padding = int(self._frame_height * 0.02)
+            logger.info(f"[DRMAdBlocker] Updated preview size to {self._preview_w}x{self._preview_h}")
 
     def _start_watchdog(self):
         self._stop_watchdog.clear()
@@ -504,10 +534,13 @@ class DRMAdBlocker:
 
     def _upload_background(self):
         if not self._snapshot_buffer:
-            logger.warning("[DRMAdBlocker] No snapshots in buffer")
+            logger.warning("[DRMAdBlocker] No snapshots in buffer for background")
             return False
 
+        logger.info(f"[DRMAdBlocker] Uploading background ({len(self._snapshot_buffer)} snapshots in buffer)")
         snapshot_data = self._snapshot_buffer[0]['data']
+        original_size = len(snapshot_data)
+
         try:
             import cv2
             import numpy as np
@@ -521,13 +554,20 @@ class DRMAdBlocker:
                 pixelated = (pixelated * 0.6).astype(np.uint8)
                 _, encoded = cv2.imencode('.jpg', pixelated, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 snapshot_data = encoded.tobytes()
+                logger.info(f"[DRMAdBlocker] Pixelated background: {w}x{h}, {len(snapshot_data)} bytes")
+            else:
+                logger.warning("[DRMAdBlocker] Failed to decode snapshot for pixelation")
         except ImportError:
-            pass
+            logger.warning("[DRMAdBlocker] OpenCV not available for pixelation")
+        except Exception as e:
+            logger.warning(f"[DRMAdBlocker] Pixelation failed: {e}")
 
-        result = self._blocking_api_call('/blocking/background', data=snapshot_data, method='POST', timeout=1.0)
+        result = self._blocking_api_call('/blocking/background', data=snapshot_data, method='POST', timeout=2.0)
         success = result is not None and result.get('ok', False)
         if success:
-            logger.info("[DRMAdBlocker] Background uploaded")
+            logger.info(f"[DRMAdBlocker] Background uploaded successfully")
+        else:
+            logger.warning(f"[DRMAdBlocker] Background upload failed: {result}")
         return success
 
     def _ease_out(self, t):
@@ -558,9 +598,9 @@ class DRMAdBlocker:
         duration = self._animation_duration_start if direction == 'start' else self._animation_duration_end
 
         full_x, full_y = 0, 0
-        full_w, full_h = self.output_width, self.output_height
-        corner_x = self.output_width - self._preview_w - self._preview_padding
-        corner_y = self.output_height - self._preview_h - self._preview_padding
+        full_w, full_h = self._frame_width, self._frame_height
+        corner_x = self._frame_width - self._preview_w - self._preview_padding
+        corner_y = self._frame_height - self._preview_h - self._preview_padding
         corner_w, corner_h = self._preview_w, self._preview_h
 
         while not self._stop_animation.is_set():
@@ -691,9 +731,9 @@ class DRMAdBlocker:
             self._blocking_api_call('/blocking/set', {
                 'enabled': 'true',
                 'preview_x': '0', 'preview_y': '0',
-                'preview_w': str(self.output_width), 'preview_h': str(self.output_height),
+                'preview_w': str(self._frame_width), 'preview_h': str(self._frame_height),
                 'preview_enabled': 'true' if self._preview_enabled else 'false',
-                'text_vocab': '', 'text_stats': '', 'text_scale': '3'
+                'text_vocab': '', 'text_stats': ''
             }, timeout=0.5)
 
             self.is_visible = True
