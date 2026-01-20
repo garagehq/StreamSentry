@@ -364,8 +364,18 @@ Example display:
 ## Dependencies
 
 ```bash
-# System
-sudo apt install -y imagemagick ffmpeg curl
+# System packages
+sudo apt install -y imagemagick ffmpeg curl v4l-utils
+
+# GStreamer and plugins for video pipeline
+sudo apt install -y \
+  gstreamer1.0-tools \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-rockchip1 \
+  gir1.2-gst-plugins-base-1.0 \
+  libgstreamer1.0-dev
 
 # Build ustreamer with MPP hardware encoding and FreeType fonts
 sudo apt install -y librockchip-mpp-dev libfreetype-dev libjpeg-dev libevent-dev
@@ -376,9 +386,17 @@ cp ustreamer /home/radxa/ustreamer-patched
 # Fonts for blocking overlay (DejaVu recommended)
 sudo apt install -y fonts-dejavu-core
 
-# Python
-pip3 install --break-system-packages pyclipper shapely numpy opencv-python pexpect PyGObject flask requests androidtv
+# Python dependencies
+pip3 install --break-system-packages \
+  pyclipper shapely numpy opencv-python \
+  pexpect PyGObject flask requests androidtv \
+  rknnlite  # RKNN NPU runtime for OCR (may need Rockchip's pip repo)
 ```
+
+**Note:** The `rknnlite` package is provided by Rockchip and may need to be installed from their SDK or a custom repository. On the Radxa board with NPU support, it may already be pre-installed.
+
+**Axera NPU (for VLM):**
+The Qwen3-VL-2B model runs on the Axera LLM 8850 NPU. The `axcl` tools and model files must be set up separately - see the Axera documentation.
 
 ## Troubleshooting
 
@@ -484,6 +502,21 @@ FreeType is NOT thread-safe. With 4 parallel MPP encoder workers, a `pthread_mut
 - Works at any resolution without GStreamer pipeline changes
 - Supports pixelated background, live preview window, and text overlays
 - Uses FreeType for proper TrueType font rendering
+
+### Memory Management
+
+**Issue:** Long-running sessions (several hours) could accumulate memory due to RKNN inference output buffers not being explicitly released.
+
+**Solution implemented:**
+- RKNN inference outputs are now explicitly copied and dereferenced in `src/ocr.py`
+- Periodic `gc.collect()` runs every 100 OCR frames and every 50 VLM frames
+- Health monitor triggers emergency cleanup at 90% memory usage
+- Frame buffers (`prev_frame`, `vlm_prev_frame`) are cleared during memory critical events
+
+**Memory monitoring:**
+- Health monitor checks memory every 5 seconds
+- Warning logged at 80% usage
+- Critical cleanup triggered at 90% usage
 
 ### Fire TV Setup
 

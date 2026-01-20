@@ -1612,6 +1612,10 @@ class Minus:
                 self.prev_frame_had_ad = ad_detected and not is_terminal
                 self.scene_skip_count = 0  # Reset skip counter after processing
 
+                # Periodic garbage collection to prevent memory leak
+                if self.frame_count % 100 == 0:
+                    gc.collect()
+
             except Exception as e:
                 logger.exception(f"OCR worker error: {e}")
 
@@ -1723,6 +1727,10 @@ class Minus:
                 self.vlm_prev_frame = frame.copy()
                 self.vlm_prev_frame_had_ad = is_ad
                 self.vlm_scene_skip_count = 0  # Reset skip counter after processing
+
+                # Periodic garbage collection to prevent memory leak
+                if self.vlm_frame_count % 50 == 0:
+                    gc.collect()
 
             except Exception as e:
                 logger.exception(f"VLM worker error: {e}")
