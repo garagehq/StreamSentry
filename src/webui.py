@@ -382,19 +382,51 @@ class WebUI:
 
         @self.app.route('/api/screenshots')
         def api_screenshots():
-            """Get list of recent screenshots."""
+            """Get list of screenshots with pagination.
+
+            Query params:
+            - type: 'ocr' or 'non_ad' (default: 'ocr')
+            - page: page number starting from 1 (default: 1)
+            - limit: items per page (default: 5, max: 20)
+            """
             try:
-                screenshots_dir = Path(__file__).parent.parent / 'screenshots'
-                result = {'ocr': [], 'non_ad': []}
+                screenshot_type = request.args.get('type', 'ocr')
+                page = max(1, int(request.args.get('page', 1)))
+                limit = min(20, max(1, int(request.args.get('limit', 5))))
 
-                for subdir in ['ocr', 'non_ad']:
-                    dir_path = screenshots_dir / subdir
-                    if dir_path.exists():
-                        # Limit to 5 most recent to prevent loading issues
-                        files = sorted(dir_path.glob('*.png'), key=lambda x: x.stat().st_mtime, reverse=True)[:5]
-                        result[subdir] = [{'name': f.name, 'path': f'/api/screenshots/{subdir}/{f.name}'} for f in files]
+                if screenshot_type not in ['ocr', 'non_ad']:
+                    screenshot_type = 'ocr'
 
-                return jsonify(result)
+                screenshots_dir = Path(__file__).parent.parent / 'screenshots' / screenshot_type
+
+                if not screenshots_dir.exists():
+                    return jsonify({
+                        'screenshots': [],
+                        'total': 0,
+                        'page': page,
+                        'pages': 0,
+                        'has_more': False
+                    })
+
+                # Get all files sorted by modification time
+                all_files = sorted(screenshots_dir.glob('*.png'), key=lambda x: x.stat().st_mtime, reverse=True)
+                total = len(all_files)
+                pages = (total + limit - 1) // limit  # Ceiling division
+
+                # Paginate
+                start = (page - 1) * limit
+                end = start + limit
+                files = all_files[start:end]
+
+                screenshots = [{'name': f.name, 'path': f'/api/screenshots/{screenshot_type}/{f.name}'} for f in files]
+
+                return jsonify({
+                    'screenshots': screenshots,
+                    'total': total,
+                    'page': page,
+                    'pages': pages,
+                    'has_more': page < pages
+                })
             except Exception as e:
                 logger.error(f"Error listing screenshots: {e}")
                 return jsonify({'error': str(e)}), 500
@@ -673,6 +705,119 @@ class WebUI:
                 return jsonify({'muted': muted})
             except Exception as e:
                 logger.error(f"Error getting audio status: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        # =========================================================================
+        # Network Info
+        # =========================================================================
+
+        @self.app.route('/api/network')
+        def api_network():
+            """Get network information (IP addresses)."""
+            try:
+                result = subprocess.run(
+                    ['ip', '-4', '-o', 'addr', 'show'],
+                    capture_output=True, text=True, timeout=5
+                )
+                interfaces = []
+                for line in result.stdout.strip().split('\n'):
+                    if line:
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            iface = parts[1]
+                            # Extract IP from "inet x.x.x.x/xx" format
+                            ip_part = parts[3].split('/')[0]
+                            if iface != 'lo':  # Skip loopback
+                                interfaces.append({'interface': iface, 'ip': ip_part})
+
+                # Get hostname
+                hostname = subprocess.run(['hostname'], capture_output=True, text=True, timeout=5).stdout.strip()
+
+                return jsonify({
+                    'hostname': hostname,
+                    'interfaces': interfaces
+                })
+            except Exception as e:
+                logger.error(f"Error getting network info: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        # =========================================================================
+        # Clear Detections
+        # =========================================================================
+
+        @self.app.route('/api/detections/clear', methods=['POST'])
+        def api_detections_clear():
+            """Clear detection history."""
+            try:
+                if hasattr(self.minus, 'detection_history'):
+                    self.minus.detection_history.clear()
+                    logger.info("[WebUI] Detection history cleared")
+                    return jsonify({'success': True, 'message': 'Detection history cleared'})
+                return jsonify({'error': 'Detection history not available'}), 500
+            except Exception as e:
+                logger.error(f"Error clearing detections: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        # =========================================================================
+        # Service Control
+        # =========================================================================
+
+        @self.app.route('/api/service/restart', methods=['POST'])
+        def api_service_restart():
+            """Schedule service restart."""
+            try:
+                logger.info("[WebUI] Service restart requested")
+                # Schedule restart in background thread to allow response to be sent
+                def restart():
+                    time.sleep(1)
+                    subprocess.run(['systemctl', 'restart', 'minus'], timeout=30)
+                threading.Thread(target=restart, daemon=True).start()
+                return jsonify({'success': True, 'message': 'Service restart scheduled'})
+            except Exception as e:
+                logger.error(f"Error restarting service: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        # =========================================================================
+        # Fire TV App Launch
+        # =========================================================================
+
+        @self.app.route('/api/firetv/launch/<app>', methods=['POST'])
+        def api_firetv_launch(app):
+            """Launch an app on Fire TV."""
+            # App package mappings
+            apps = {
+                'youtube': 'com.amazon.firetv.youtube',
+                'netflix': 'com.netflix.ninja',
+                'prime': 'com.amazon.avod',
+                'hulu': 'com.hulu.plus',
+                'disney': 'com.disney.disneyplus',
+                'hbomax': 'com.hbo.hbonow',
+                'peacock': 'com.peacocktv.peacockandroid',
+                'plex': 'com.plexapp.android',
+                'kodi': 'org.xbmc.kodi',
+                'spotify': 'com.spotify.tv.android',
+                'twitch': 'tv.twitch.android.app',
+                'home': 'com.amazon.tv.launcher',
+            }
+
+            try:
+                if app.lower() not in apps:
+                    return jsonify({'error': f'Unknown app: {app}. Available: {list(apps.keys())}'}), 400
+
+                package = apps[app.lower()]
+
+                if hasattr(self.minus, 'fire_tv_setup') and self.minus.fire_tv_setup:
+                    controller = self.minus.fire_tv_setup.get_controller()
+                    if controller and controller.is_connected and hasattr(controller, '_device') and controller._device:
+                        # Use monkey to launch the app
+                        controller._device.adb_shell(f'monkey -p {package} -c android.intent.category.LAUNCHER 1')
+                        logger.info(f"[WebUI] Launched {app} on Fire TV")
+                        return jsonify({'success': True, 'app': app, 'package': package})
+                    return jsonify({'error': 'Fire TV not connected'}), 503
+
+                return jsonify({'error': 'Fire TV not initialized'}), 500
+            except Exception as e:
+                logger.error(f"Error launching app: {e}")
                 return jsonify({'error': str(e)}), 500
 
     def start(self):

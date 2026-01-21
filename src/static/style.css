@@ -1255,3 +1255,175 @@ input:checked + .toggle-slider:before {
 .video-container:fullscreen .fullscreen-btn {
     display: none;
 }
+
+/* Pagination */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1rem;
+    padding: 0.5rem;
+}
+
+.page-btn {
+    padding: 0.5rem 1rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.875rem;
+}
+
+.page-btn:hover:not(:disabled) {
+    background: var(--accent);
+}
+
+.page-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.page-info {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.screenshots-total {
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    margin-top: 0.5rem;
+}
+
+/* Apps Section */
+.apps-section {
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+.apps-section h2 {
+    font-size: 1.125rem;
+    margin-bottom: 1rem;
+}
+
+.apps-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+
+.app-btn {
+    padding: 0.75rem 0.5rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.75rem;
+    transition: all 0.2s;
+}
+
+.app-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+/* Network Section */
+.network-section {
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.network-section h2 {
+    font-size: 1.125rem;
+    margin-bottom: 0.75rem;
+}
+
+.network-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.network-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+}
+
+.net-label {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.net-value {
+    font-family: monospace;
+    font-size: 0.875rem;
+}
+
+/* Service Section */
+.service-section {
+    background: var(--bg-card);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.service-section h2 {
+    font-size: 1.125rem;
+    margin-bottom: 0.75rem;
+}
+
+.service-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+/* ADB Actions */
+.adb-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+/* Button Variants */
+.action-btn {
+    padding: 0.5rem 1rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: all 0.2s;
+}
+
+.action-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.warning-btn {
+    padding: 0.5rem 1rem;
+    background: rgba(245, 158, 11, 0.2);
+    border: 1px solid var(--warning);
+    border-radius: 6px;
+    color: var(--warning);
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: all 0.2s;
+}
+
+.warning-btn:hover {
+    background: var(--warning);
+    color: white;
+}

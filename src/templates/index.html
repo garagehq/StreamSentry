@@ -160,6 +160,18 @@
                     </div>
                 </div>
             </section>
+
+            <section class="apps-section">
+                <h2>Quick Launch</h2>
+                <div class="apps-grid">
+                    <button class="app-btn" onclick="launchApp('youtube')">YouTube</button>
+                    <button class="app-btn" onclick="launchApp('netflix')">Netflix</button>
+                    <button class="app-btn" onclick="launchApp('prime')">Prime</button>
+                    <button class="app-btn" onclick="launchApp('disney')">Disney+</button>
+                    <button class="app-btn" onclick="launchApp('hulu')">Hulu</button>
+                    <button class="app-btn" onclick="launchApp('plex')">Plex</button>
+                </div>
+            </section>
         </div>
 
         <!-- ===== SCREENSHOTS TAB ===== -->
@@ -173,6 +185,12 @@
                 <div id="screenshots-grid" class="screenshots-grid">
                     <div class="empty-state">Select a tab to load</div>
                 </div>
+                <div id="screenshots-pagination" class="pagination hidden">
+                    <button onclick="loadScreenshotsPage(currentScreenshotPage - 1)" id="prev-page-btn" class="page-btn" disabled>&laquo; Prev</button>
+                    <span id="page-info" class="page-info">Page 1 of 1</span>
+                    <button onclick="loadScreenshotsPage(currentScreenshotPage + 1)" id="next-page-btn" class="page-btn">Next &raquo;</button>
+                </div>
+                <div id="screenshots-total" class="screenshots-total"></div>
             </section>
         </div>
 
@@ -220,14 +238,35 @@
                 </div>
             </section>
 
+            <!-- Network Info -->
+            <section class="network-section">
+                <h2>Network</h2>
+                <div id="network-info" class="network-info">
+                    <div class="empty-state">Loading...</div>
+                </div>
+            </section>
+
             <!-- ADB Keys -->
             <section class="adb-section">
                 <h2>ADB Keys (Fire TV)</h2>
                 <div id="adb-key-info" class="adb-key-info">
                     <div class="empty-state">Loading...</div>
                 </div>
-                <button onclick="revokeAdbKeys()" class="danger-btn">Revoke ADB Keys</button>
+                <div class="adb-actions">
+                    <button onclick="copyFingerprint()" class="action-btn" id="copy-fp-btn">Copy Fingerprint</button>
+                    <button onclick="revokeAdbKeys()" class="danger-btn">Revoke Keys</button>
+                </div>
                 <p class="help-text">Revoking keys will require re-authorization on the Fire TV.</p>
+            </section>
+
+            <!-- Service Controls -->
+            <section class="service-section">
+                <h2>Service</h2>
+                <div class="service-actions">
+                    <button onclick="restartService()" class="warning-btn">Restart Service</button>
+                    <button onclick="clearDetections()" class="action-btn">Clear Detections</button>
+                </div>
+                <p class="help-text">Restarting will briefly interrupt video output.</p>
             </section>
 
             <!-- Logs -->
@@ -300,6 +339,7 @@
             } else if (tabName === 'settings') {
                 loadWifiConnections();
                 loadAdbKeys();
+                loadNetworkInfo();
                 refreshLogs();
             } else if (tabName === 'remote') {
                 updateFireTVStatus();
@@ -676,27 +716,50 @@
         }
 
         // =========================================================================
-        // Screenshots
+        // Screenshots (with pagination)
         // =========================================================================
 
+        let currentScreenshotPage = 1;
+        let screenshotTotalPages = 1;
+
         async function loadScreenshots() {
+            currentScreenshotPage = 1;
+            await loadScreenshotsPage(1);
+        }
+
+        async function loadScreenshotsPage(page) {
+            if (page < 1) return;
+
             try {
-                const response = await fetch('/api/screenshots');
+                const response = await fetch(`/api/screenshots?type=${currentScreenshotTab}&page=${page}&limit=5`);
                 if (!response.ok) return;
 
                 const data = await response.json();
                 const grid = document.getElementById('screenshots-grid');
-                const screenshots = data[currentScreenshotTab] || [];
+                const pagination = document.getElementById('screenshots-pagination');
+                const totalEl = document.getElementById('screenshots-total');
 
-                if (screenshots.length > 0) {
-                    grid.innerHTML = screenshots.map(s =>
+                currentScreenshotPage = data.page;
+                screenshotTotalPages = data.pages;
+
+                if (data.screenshots && data.screenshots.length > 0) {
+                    grid.innerHTML = data.screenshots.map(s =>
                         `<div class="screenshot-item" onclick="window.open('${s.path}', '_blank')">
                             <img src="${s.path}" alt="${s.name}" loading="lazy">
                             <span class="screenshot-name">${s.name.substring(0, 20)}...</span>
                         </div>`
                     ).join('');
+
+                    // Update pagination
+                    pagination.classList.remove('hidden');
+                    document.getElementById('page-info').textContent = `Page ${data.page} of ${data.pages}`;
+                    document.getElementById('prev-page-btn').disabled = data.page <= 1;
+                    document.getElementById('next-page-btn').disabled = !data.has_more;
+                    totalEl.textContent = `${data.total} total screenshots`;
                 } else {
                     grid.innerHTML = '<div class="empty-state">No screenshots</div>';
+                    pagination.classList.add('hidden');
+                    totalEl.textContent = '';
                 }
             } catch (error) {
                 console.error('Screenshots load failed:', error);
@@ -705,6 +768,7 @@
 
         function showScreenshotTab(tab) {
             currentScreenshotTab = tab;
+            currentScreenshotPage = 1;
             document.querySelectorAll('.screenshots-section .tab-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.textContent.toLowerCase().includes(tab === 'ocr' ? 'ad' : 'non'));
             });
@@ -855,6 +919,7 @@
                 const info = document.getElementById('adb-key-info');
 
                 if (data.exists) {
+                    currentFingerprint = data.fingerprint;
                     info.innerHTML = `
                         <div class="adb-key-item">
                             <span class="key-label">Status:</span>
@@ -866,6 +931,7 @@
                         </div>
                     `;
                 } else {
+                    currentFingerprint = null;
                     info.innerHTML = '<div class="empty-state">No ADB keys found</div>';
                 }
             } catch (error) {
@@ -889,6 +955,101 @@
             } catch (error) {
                 console.error('ADB revoke failed:', error);
                 alert('Revoke failed');
+            }
+        }
+
+        let currentFingerprint = null;
+
+        async function copyFingerprint() {
+            if (currentFingerprint) {
+                try {
+                    await navigator.clipboard.writeText(currentFingerprint);
+                    const btn = document.getElementById('copy-fp-btn');
+                    btn.textContent = 'Copied!';
+                    setTimeout(() => { btn.textContent = 'Copy Fingerprint'; }, 2000);
+                } catch (error) {
+                    alert('Copy failed');
+                }
+            }
+        }
+
+        // =========================================================================
+        // Network Info
+        // =========================================================================
+
+        async function loadNetworkInfo() {
+            try {
+                const response = await fetch('/api/network');
+                if (!response.ok) return;
+
+                const data = await response.json();
+                const info = document.getElementById('network-info');
+
+                let html = `<div class="network-item"><span class="net-label">Hostname:</span><span class="net-value">${data.hostname}</span></div>`;
+
+                if (data.interfaces && data.interfaces.length > 0) {
+                    data.interfaces.forEach(iface => {
+                        html += `<div class="network-item"><span class="net-label">${iface.interface}:</span><span class="net-value">${iface.ip}</span></div>`;
+                    });
+                }
+
+                info.innerHTML = html;
+            } catch (error) {
+                console.error('Network info load failed:', error);
+            }
+        }
+
+        // =========================================================================
+        // Service Controls
+        // =========================================================================
+
+        async function restartService() {
+            if (!confirm('Restart the Minus service? Video will briefly stop.')) return;
+
+            try {
+                const response = await fetch('/api/service/restart', { method: 'POST' });
+                const data = await response.json();
+                if (response.ok) {
+                    alert('Service restart scheduled. Page will reload in 5 seconds...');
+                    setTimeout(() => { location.reload(); }, 5000);
+                } else {
+                    alert(data.error || 'Restart failed');
+                }
+            } catch (error) {
+                console.error('Service restart failed:', error);
+                alert('Restart failed');
+            }
+        }
+
+        async function clearDetections() {
+            if (!confirm('Clear all detection history?')) return;
+
+            try {
+                const response = await fetch('/api/detections/clear', { method: 'POST' });
+                const data = await response.json();
+                if (response.ok) {
+                    updateDetections();
+                } else {
+                    alert(data.error || 'Clear failed');
+                }
+            } catch (error) {
+                console.error('Clear detections failed:', error);
+            }
+        }
+
+        // =========================================================================
+        // Fire TV App Launch
+        // =========================================================================
+
+        async function launchApp(app) {
+            try {
+                const response = await fetch(`/api/firetv/launch/${app}`, { method: 'POST' });
+                const data = await response.json();
+                if (!response.ok) {
+                    console.error('App launch failed:', data.error);
+                }
+            } catch (error) {
+                console.error('App launch failed:', error);
             }
         }
 

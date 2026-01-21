@@ -1174,35 +1174,23 @@ class TestWebUI:
             assert data['muted'] is False
 
     def test_webui_api_screenshots(self):
-        """Test the /api/screenshots endpoint."""
+        """Test the /api/screenshots endpoint (paginated)."""
         from webui import WebUI
         import os
         mock_minus = MagicMock()
-        # Create temp screenshot dirs
-        test_dir = '/tmp/test_screenshots_webui'
-        ocr_dir = os.path.join(test_dir, 'ocr')
-        non_ad_dir = os.path.join(test_dir, 'non_ad')
-        os.makedirs(ocr_dir, exist_ok=True)
-        os.makedirs(non_ad_dir, exist_ok=True)
-
-        # Create test files
-        with open(os.path.join(ocr_dir, 'test1.png'), 'w') as f:
-            f.write('test')
-
-        mock_minus.config = MagicMock()
-        mock_minus.config.screenshot_dir = test_dir
         ui = WebUI(mock_minus)
 
         with ui.app.test_client() as client:
-            response = client.get('/api/screenshots')
+            # Test with default params
+            response = client.get('/api/screenshots?type=ocr&page=1&limit=5')
             assert response.status_code == 200
             data = response.get_json()
-            assert 'ocr' in data
-            assert 'non_ad' in data
-
-        # Cleanup
-        import shutil
-        shutil.rmtree(test_dir, ignore_errors=True)
+            # Check paginated response structure
+            assert 'screenshots' in data
+            assert 'total' in data
+            assert 'page' in data
+            assert 'pages' in data
+            assert 'has_more' in data
 
     def test_webui_api_test_trigger_block(self):
         """Test the /api/test/trigger-block endpoint."""
