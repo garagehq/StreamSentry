@@ -724,38 +724,36 @@ class Minus:
 
     def _on_hdmi_lost(self):
         """Handle HDMI signal loss."""
-        logger.warning("[Recovery] HDMI signal lost - showing placeholder")
-        # Show blocking screen with HDMI lost message
+        logger.warning("[Recovery] HDMI signal lost - showing NO SIGNAL display")
+        # Switch to standalone NO SIGNAL display (doesn't depend on ustreamer)
         if self.ad_blocker:
-            self.ad_blocker.show('hdmi_lost')
+            self.ad_blocker.start_no_signal_mode()
         if self.audio:
             self.audio.mute()
 
     def _on_hdmi_restored(self):
         """Handle HDMI signal restoration."""
-        logger.info("[Recovery] HDMI signal restored - restarting capture")
+        logger.info("[Recovery] HDMI signal restored - showing loading screen")
 
         # Set flag to prevent main loop from interfering with recovery
         self._hdmi_recovery_in_progress = True
 
         try:
+            # Switch to loading display while we restart everything
+            if self.ad_blocker:
+                self.ad_blocker.start_loading_mode()
+
             # Restart ustreamer first to pick up new signal
             self._restart_ustreamer()
 
             # Wait for ustreamer to be fully ready before restarting video pipeline
             time.sleep(2)
 
-            # Restart video pipeline to reconnect to ustreamer
+            # Start the video pipeline (will transition from loading to live)
             if self.ad_blocker:
-                logger.info("[Recovery] Restarting video pipeline...")
-                self.ad_blocker.restart()
+                logger.info("[Recovery] Starting video pipeline...")
+                self.ad_blocker.start()
 
-            # Wait for pipeline restart to complete (it runs async with backoff)
-            time.sleep(3)
-
-            # Hide blocking screen and restore video after restart
-            if self.ad_blocker and not self.ad_detected:
-                self.ad_blocker.hide()
             if self.audio:
                 self.audio.unmute()
 
@@ -765,9 +763,12 @@ class Minus:
 
     def _on_video_pipeline_stall(self):
         """Handle video pipeline stall detected by health monitor."""
-        logger.warning("[Recovery] Video pipeline stall detected - restarting pipeline")
+        logger.warning("[Recovery] Video pipeline stall detected - showing loading and restarting")
         if self.ad_blocker:
-            self.ad_blocker.restart()
+            # Show loading while we restart the pipeline
+            self.ad_blocker.start_loading_mode()
+            # Start will transition from loading to live
+            self.ad_blocker.start()
 
     def _restart_ustreamer(self):
         """Restart ustreamer process."""
@@ -1916,20 +1917,9 @@ class Minus:
                             signal_info = self.check_hdmi_signal()
                             if signal_info:
                                 width, height, fps = signal_info
-                                logger.info(f"HDMI signal detected: {width}x{height} @ {fps}fps - switching to normal mode")
-                                # Stop no-signal display and transition to normal operation
-                                self.ad_blocker.destroy()
-                                # Reinitialize ad_blocker for normal operation
-                                self.ad_blocker = AdBlocker(
-                                    connector_id=self.config.drm_connector_id,
-                                    plane_id=self.config.drm_plane_id,
-                                    minus_instance=self,
-                                    ustreamer_port=self.config.ustreamer_port,
-                                    output_width=self.config.output_width,
-                                    output_height=self.config.output_height
-                                )
-                                if self.audio:
-                                    self.ad_blocker.set_audio(self.audio)
+                                logger.info(f"HDMI signal detected: {width}x{height} @ {fps}fps - switching to loading mode")
+                                # Switch to loading mode while we start the display
+                                self.ad_blocker.start_loading_mode()
                                 break
                     except KeyboardInterrupt:
                         self.stop()
@@ -1948,7 +1938,13 @@ class Minus:
         width, height, fps = signal_info
         logger.info(f"HDMI signal: {width}x{height} @ {fps}fps")
 
-        # Start display
+        # If ad_blocker doesn't have a loading/no-signal screen showing, start loading now
+        # This ensures we always show loading during ustreamer startup
+        if self.ad_blocker and self.ad_blocker.current_source not in ('loading', 'no_hdmi_device'):
+            logger.info("Starting loading display while initializing...")
+            self.ad_blocker.start_loading_mode()
+
+        # Start display (will transition from loading to live when ready)
         if not self.start_display():
             logger.error("Failed to start display")
             return False
