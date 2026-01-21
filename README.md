@@ -205,9 +205,11 @@ Both preview window and debug dashboard are toggleable via Web UI Settings.
 
 ```
 minus/
-├── minus.py              # Main entry point
+├── minus.py              # Main entry point - orchestrates everything
 ├── minus.spec            # PyInstaller build spec
 ├── test_fire_tv.py       # Fire TV controller test script
+├── tests/
+│   └── test_modules.py   # Unit tests for all modules
 ├── src/
 │   ├── ocr.py            # PaddleOCR on RKNN NPU
 │   ├── vlm.py            # Qwen3-VL-2B on Axera NPU
@@ -218,6 +220,14 @@ minus/
 │   ├── overlay.py        # Text overlay via ustreamer API
 │   ├── fire_tv.py        # Fire TV ADB controller
 │   ├── fire_tv_setup.py  # Fire TV setup flow with overlay notifications
+│   ├── vocabulary.py     # Spanish vocabulary list (120+ words)
+│   ├── console.py        # Console blanking/restore functions
+│   ├── drm.py            # DRM output probing (HDMI, resolution, plane)
+│   ├── v4l2.py           # V4L2 device probing (format, resolution)
+│   ├── config.py         # MinusConfig dataclass
+│   ├── capture.py        # UstreamerCapture class for snapshots
+│   ├── screenshots.py    # ScreenshotManager with deduplication
+│   ├── skip_detection.py # Skip button detection (regex patterns)
 │   ├── templates/
 │   │   └── index.html    # Web UI single-page app
 │   └── static/
@@ -235,6 +245,47 @@ minus/
 ├── CLAUDE.md             # Development notes
 └── AUDIO.md              # Audio implementation details
 ```
+
+## Testing
+
+Minus includes a comprehensive test suite covering all extracted modules.
+
+```bash
+# Run all tests (no dependencies required)
+python3 tests/test_modules.py
+
+# Or with pytest (if installed)
+python3 -m pytest tests/test_modules.py -v
+```
+
+**Test Output:**
+```
+============================================================
+Running TestVocabulary
+============================================================
+  PASS: test_vocabulary_has_common_words
+  PASS: test_vocabulary_not_empty
+  ...
+============================================================
+RESULTS: 93/93 passed
+============================================================
+```
+
+**What's Tested:**
+- **Vocabulary** - Format validation, content structure, common words
+- **Config** - Dataclass defaults and custom values
+- **Skip Detection** - Button pattern matching, countdown parsing, edge cases
+- **Screenshots** - Deduplication, file saving, hash computation, truncation
+- **Console** - Blanking/restore command generation
+- **Capture** - Snapshot URL handling, cleanup
+- **DRM** - Output probing, fallback values
+- **V4L2** - Format detection, error handling
+- **Overlay** - NotificationOverlay, positions, show/hide
+- **Health** - HealthMonitor, HealthStatus, HDMI detection
+- **Fire TV** - Controller, key codes, device detection
+- **VLM** - VLMManager, response parsing
+- **OCR** - Keywords, exclusions, terminal detection
+- **WebUI** - Flask routes, API endpoints
 
 ## VLM Model
 

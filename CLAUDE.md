@@ -69,7 +69,7 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 |------|---------|
 | `minus.py` | Main entry point - orchestrates everything |
 | `minus.spec` | PyInstaller spec for building executable |
-| `src/ad_blocker.py` | GStreamer video pipeline with input-selector, Spanish vocab |
+| `src/ad_blocker.py` | GStreamer video pipeline with input-selector |
 | `src/audio.py` | GStreamer audio passthrough with mute control |
 | `src/ocr.py` | PaddleOCR on RKNN NPU, keyword detection |
 | `src/vlm.py` | Qwen3-VL-2B on Axera NPU |
@@ -78,7 +78,16 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | `src/fire_tv.py` | Fire TV ADB remote control for ad skipping |
 | `src/fire_tv_setup.py` | Fire TV auto-setup flow with overlay notifications |
 | `src/overlay.py` | Notification overlay via ustreamer API |
+| `src/vocabulary.py` | Spanish vocabulary list (120+ words) |
+| `src/console.py` | Console blanking/restore functions |
+| `src/drm.py` | DRM output probing (HDMI, resolution, plane) |
+| `src/v4l2.py` | V4L2 device probing (format, resolution) |
+| `src/config.py` | MinusConfig dataclass |
+| `src/capture.py` | UstreamerCapture class for snapshot capture |
+| `src/screenshots.py` | ScreenshotManager class with deduplication |
+| `src/skip_detection.py` | Skip button detection (regex patterns) |
 | `test_fire_tv.py` | Fire TV controller test and interactive remote |
+| `tests/test_modules.py` | Unit tests for all extracted modules |
 | `src/templates/index.html` | Web UI single-page app |
 | `src/static/style.css` | Web UI dark theme styles |
 | `install.sh` | Install as systemd service |
@@ -882,3 +891,64 @@ pyinstaller minus.spec
 ```
 
 Note: Models are external and must be present at runtime.
+
+## Testing
+
+The project includes a comprehensive test suite for all extracted modules.
+
+**Running Tests:**
+```bash
+# Run all tests (uses unittest if pytest not installed)
+python3 tests/test_modules.py
+
+# Or with pytest (if installed)
+python3 -m pytest tests/test_modules.py -v
+```
+
+**Test Coverage:**
+
+| Module | Test Class | Tests |
+|--------|------------|-------|
+| `src/vocabulary.py` | TestVocabulary | Format validation, content checks, common words |
+| `src/config.py` | TestConfig | Dataclass defaults, custom values |
+| `src/skip_detection.py` | TestSkipDetection | Pattern matching, countdown parsing, edge cases |
+| `src/screenshots.py` | TestScreenshots | Deduplication, file saving, truncation |
+| `src/console.py` | TestConsole | Console blanking/restore commands |
+| `src/capture.py` | TestCapture | Snapshot capture, cleanup |
+| `src/drm.py` | TestDRM | DRM probing, fallback values |
+| `src/v4l2.py` | TestV4L2 | V4L2 format detection, error handling |
+| `src/overlay.py` | TestOverlay | NotificationOverlay, positions, show/hide |
+| `src/health.py` | TestHealth | HealthMonitor, HealthStatus, HDMI detection |
+| `src/fire_tv.py` | TestFireTV | Controller, key codes, device detection |
+| `src/vlm.py` | TestVLM | VLMManager, response parsing |
+| `src/ocr.py` | TestOCR | Keywords, exclusions, terminal detection |
+| `src/webui.py` | TestWebUI | Flask routes, API endpoints |
+| Integration | TestIntegration | Cross-module tests |
+
+**Test Design:**
+- Tests are self-contained with temporary directories
+- Mock subprocess calls to avoid system dependencies
+- Fallback to manual test runner if pytest not installed
+- All 93 tests should pass on a clean system
+
+## Module Structure
+
+The codebase has been refactored from monolithic files into smaller, focused modules:
+
+**Extracted from `minus.py`:**
+- `src/console.py` - Console blanking functions (`blank_console`, `restore_console`)
+- `src/drm.py` - DRM probing (`probe_drm_output`)
+- `src/v4l2.py` - V4L2 probing (`probe_v4l2_device`)
+- `src/config.py` - Configuration dataclass (`MinusConfig`)
+- `src/capture.py` - Snapshot capture (`UstreamerCapture`)
+- `src/screenshots.py` - Screenshot management (`ScreenshotManager`)
+- `src/skip_detection.py` - Skip button detection (`check_skip_opportunity`)
+
+**Extracted from `ad_blocker.py`:**
+- `src/vocabulary.py` - Spanish vocabulary list (`SPANISH_VOCABULARY`)
+
+**Benefits:**
+- Easier to test individual components
+- Better code organization and discoverability
+- Reduced file sizes (minus.py ~1700 lines, ad_blocker.py ~950 lines)
+- Clear separation of concerns
