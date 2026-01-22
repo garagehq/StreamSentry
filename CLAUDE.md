@@ -94,8 +94,10 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | `uninstall.sh` | Remove systemd service |
 | `stop.sh` | Graceful shutdown script |
 | `minus.service` | systemd service file |
-| `screenshots/ocr/` | Ad detection screenshots (auto-truncated) |
-| `screenshots/non_ad/` | Non-ad screenshots for VLM training |
+| `screenshots/ads/` | OCR-detected ads (for training) |
+| `screenshots/non_ads/` | User paused = false positives (for training) |
+| `screenshots/vlm_spastic/` | VLM uncertainty cases (for analysis) |
+| `screenshots/static/` | Static screen suppression (still frames) |
 
 ## Running
 
@@ -605,7 +607,7 @@ The health monitor (`src/health.py`) runs in a background thread and checks:
 | Subsystem | Check | Recovery |
 |-----------|-------|----------|
 | HDMI signal | v4l2-ctl --query-dv-timings | Show "NO SIGNAL" overlay, mute audio |
-| No HDMI at startup | check_hdmi_signal() | Show "NO HDMI INPUT" and wait |
+| No HDMI at startup | check_hdmi_signal() | Show bouncing "NO SIGNAL" screensaver |
 | ustreamer | HTTP HEAD to :9090/snapshot | Restart ustreamer + video pipeline |
 | Video pipeline | Buffer flow + FPS monitoring | Restart pipeline with exponential backoff |
 | Output FPS | GStreamer pad probe | Log warning if < 25fps |
@@ -722,27 +724,48 @@ Test mode prevents the detection loop from canceling the blocking, allowing full
 
 ## VLM Training Data Collection
 
-Minus automatically collects training data for future VLM improvements:
+Minus automatically collects training data for future VLM improvements, organized by type:
 
-**Ad screenshots** (`screenshots/ocr/`):
+**Screenshot directories:**
+```
+screenshots/
+├── ads/           # OCR-detected ads (unlimited, for training)
+├── non_ads/       # User paused = false positives (for training)
+├── vlm_spastic/   # VLM uncertainty (detected ad 2-5x then changed mind)
+└── static/        # Static screen suppression (still frames with ad text)
+```
+
+**Ad screenshots** (`screenshots/ads/`):
 - Saved when OCR detects ad keywords
 - Includes matched keywords and all detected text in logs
-- Auto-truncated to keep last 50 (configurable via `--max-screenshots`)
+- Rate limited: max 1 per 5 seconds with perceptual hash deduplication
+- Unlimited by default (configurable via `--max-screenshots`)
 - Filename format: `ad_YYYYMMDD_HHMMSS_mmm_NNNN.png`
 
-**Non-ad screenshots** (`screenshots/non_ad/`):
+**Non-ad screenshots** (`screenshots/non_ads/`):
 - Saved when user pauses blocking via WebUI
 - Represents content that should NOT be classified as ads
 - User pausing = "this is a false positive, save for training"
 - Filename format: `non_ad_YYYYMMDD_HHMMSS_mmm_NNNN.png`
 
+**VLM spastic screenshots** (`screenshots/vlm_spastic/`):
+- Saved when VLM detects ads 2-5 times then changes its mind
+- Captures potential false positive cases where VLM was uncertain
+- Filename format: `vlm_spastic_Nx_YYYYMMDD_HHMMSS_mmm_NNNN.png`
+
+**Static screenshots** (`screenshots/static/`):
+- Saved when static screen suppression triggers
+- Still/paused frames with ad text that shouldn't trigger blocking
+- Filename format: `static_YYYYMMDD_HHMMSS_mmm_NNNN.png`
+
 **Training workflow:**
-1. Run Minus normally
+1. Run Minus normally - screenshots are automatically organized by type
 2. When you see a false positive (blocking non-ad content), pause via WebUI
-3. Non-ad screenshot is automatically saved
-4. Use collected screenshots to fine-tune VLM:
-   - `screenshots/ocr/*.png` → label as "ad"
-   - `screenshots/non_ad/*.png` → label as "not_ad"
+3. Use collected screenshots to fine-tune VLM:
+   - `screenshots/ads/*.png` → label as "ad"
+   - `screenshots/non_ads/*.png` → label as "not_ad"
+   - `screenshots/vlm_spastic/*.png` → analyze for VLM improvements
+   - `screenshots/static/*.png` → label as "not_ad" (static content)
 
 ## Fire TV Remote Control
 

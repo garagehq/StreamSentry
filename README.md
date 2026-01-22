@@ -86,7 +86,7 @@ python3 minus.py --check-signal
 | `--device PATH` | Video device (default: /dev/video0) |
 | `--screenshot-dir DIR` | Screenshot directory (default: screenshots) |
 | `--ocr-timeout SEC` | Skip OCR frames taking longer than this (default: 1.5s) |
-| `--max-screenshots N` | Keep only N recent screenshots (default: 50, 0=unlimited) |
+| `--max-screenshots N` | Keep only N recent screenshots per folder (default: 0=unlimited) |
 | `--check-signal` | Check HDMI signal and exit |
 | `--connector-id N` | DRM connector ID (default: 215) |
 | `--plane-id N` | DRM plane ID (default: 72) |
@@ -254,8 +254,10 @@ minus/
 ├── models/
 │   └── paddleocr/        # RKNN models (or symlink)
 ├── screenshots/
-│   ├── ocr/              # Ad detection screenshots (auto-truncated)
-│   └── non_ad/           # Non-ad screenshots for VLM training
+│   ├── ads/              # OCR-detected ads (for training)
+│   ├── non_ads/          # User paused = false positives (for training)
+│   ├── vlm_spastic/      # VLM uncertainty cases (for analysis)
+│   └── static/           # Static screen suppression (still frames)
 ├── README.md             # This file
 ├── CLAUDE.md             # Development notes
 └── AUDIO.md              # Audio implementation details
@@ -377,8 +379,9 @@ pip3 install --break-system-packages pyclipper shapely numpy opencv-python pexpe
 ## Troubleshooting
 
 **No HDMI signal:**
-When started without HDMI input, Minus displays "NO HDMI INPUT" on screen
-and waits for user to connect a source. To check signal manually:
+When started without HDMI input, Minus displays a bouncing "NO SIGNAL" screensaver
+(DVD-style) and waits for user to connect a source. When the text hits a corner,
+it does a little spin animation! To check signal manually:
 ```bash
 v4l2-ctl -d /dev/video0 --query-dv-timings
 ```
@@ -493,8 +496,9 @@ Minus includes a mobile-friendly web UI for remote monitoring and control:
 
 **Access:**
 - Local: `http://localhost:8080`
+- mDNS: `http://minus.local:8080` (from any device on same network)
 - Tailscale: `http://<tailscale-hostname>:8080`
-- Direct video stream: `http://<hostname>:9090/stream`
+- Direct video stream: `http://minus.local:9090/stream`
 
 **Features:**
 - **Live video feed** - Real-time MJPEG stream from ustreamer
@@ -579,9 +583,13 @@ overlay.hide()  # Manual hide
 - Keeps 3 backup files (minus.log.1, .2, .3)
 
 **Screenshot Management:**
-- Ad screenshots: `screenshots/ocr/` (auto-truncated to last 50)
-- Non-ad screenshots: `screenshots/non_ad/` (saved when pausing via WebUI)
-- Configurable via `--max-screenshots` (0 = unlimited)
+Screenshots are organized by type for easy training data preparation:
+- `screenshots/ads/` - OCR-detected ads (unlimited by default for training)
+- `screenshots/non_ads/` - User paused = false positives (for training)
+- `screenshots/vlm_spastic/` - VLM uncertainty (detected ad then changed mind)
+- `screenshots/static/` - Static screen suppression (still frames with ad text)
+- Rate limited: Max 1 ad screenshot per 5 seconds (with deduplication)
+- Configurable via `--max-screenshots` (default: 0 = unlimited)
 
 **Audio Error Recovery:**
 - Watchdog checks every 3 seconds, restarts if stalled for 6+ seconds
