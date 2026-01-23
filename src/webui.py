@@ -205,6 +205,40 @@ class WebUI:
                 logger.error(f"Error disabling debug overlay: {e}")
                 return jsonify({'error': str(e)}), 500
 
+        @self.app.route('/api/firetv-keepalive')
+        def api_firetv_keepalive_status():
+            """Get Fire TV keep-alive status."""
+            try:
+                enabled = False
+                if self.minus.fire_tv_controller:
+                    enabled = self.minus.fire_tv_controller.is_keepalive_enabled()
+                return jsonify({'keepalive_enabled': enabled})
+            except Exception as e:
+                logger.error(f"Error getting Fire TV keep-alive status: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/firetv-keepalive/enable', methods=['POST'])
+        def api_firetv_keepalive_enable():
+            """Enable Fire TV keep-alive pings."""
+            try:
+                if self.minus.fire_tv_controller:
+                    self.minus.fire_tv_controller.set_keepalive_enabled(True)
+                return jsonify({'success': True, 'keepalive_enabled': True})
+            except Exception as e:
+                logger.error(f"Error enabling Fire TV keep-alive: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/firetv-keepalive/disable', methods=['POST'])
+        def api_firetv_keepalive_disable():
+            """Disable Fire TV keep-alive pings."""
+            try:
+                if self.minus.fire_tv_controller:
+                    self.minus.fire_tv_controller.set_keepalive_enabled(False)
+                return jsonify({'success': True, 'keepalive_enabled': False})
+            except Exception as e:
+                logger.error(f"Error disabling Fire TV keep-alive: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/test/trigger-block', methods=['POST'])
         def api_test_trigger_block():
             """Trigger ad blocking for testing.

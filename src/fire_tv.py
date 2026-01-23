@@ -21,6 +21,7 @@ Requirements:
 import asyncio
 import logging
 import os
+import random
 import re
 import socket
 import subprocess
@@ -120,6 +121,13 @@ class FireTVController:
         self._reconnect_thread: Optional[threading.Thread] = None
         self._stop_reconnect = threading.Event()
         self._consecutive_failures = 0
+
+        # Keep-alive state (optional feature to prevent disconnects)
+        self._keepalive_enabled = False
+        self._keepalive_thread: Optional[threading.Thread] = None
+        self._stop_keepalive = threading.Event()
+        self._keepalive_base_interval = 300.0  # Base: 5 minutes
+        self._keepalive_noise = 60.0  # Random noise: +/- 60 seconds
 
         # Connection callback
         self._on_connection_change: Optional[Callable[[bool], None]] = None
@@ -666,6 +674,66 @@ class FireTVController:
         except Exception as e:
             logger.debug(f"[FireTV] Connection check failed: {e}")
             return False
+
+    # Keep-alive methods
+    def set_keepalive_enabled(self, enabled: bool):
+        """Enable or disable keep-alive pings."""
+        if enabled and not self._keepalive_enabled:
+            self._keepalive_enabled = True
+            self._start_keepalive_thread()
+            logger.info("[FireTV] Keep-alive enabled (pings every ~5m with random jitter)")
+        elif not enabled and self._keepalive_enabled:
+            self._keepalive_enabled = False
+            self._stop_keepalive_thread()
+            logger.info("[FireTV] Keep-alive disabled")
+
+    def is_keepalive_enabled(self) -> bool:
+        """Check if keep-alive is enabled."""
+        return self._keepalive_enabled
+
+    def _start_keepalive_thread(self):
+        """Start the keep-alive thread."""
+        if self._keepalive_thread and self._keepalive_thread.is_alive():
+            return
+
+        self._stop_keepalive.clear()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop,
+            name="FireTV-KeepAlive",
+            daemon=True
+        )
+        self._keepalive_thread.start()
+
+    def _stop_keepalive_thread(self):
+        """Stop the keep-alive thread."""
+        self._stop_keepalive.set()
+        if self._keepalive_thread:
+            self._keepalive_thread.join(timeout=2.0)
+            self._keepalive_thread = None
+
+    def _keepalive_loop(self):
+        """Keep-alive loop - pings Fire TV periodically with randomized intervals."""
+        logger.debug("[FireTV] Keep-alive thread started")
+        while not self._stop_keepalive.is_set():
+            # Randomized interval: base +/- noise (4-6 minutes by default)
+            noise = random.uniform(-self._keepalive_noise, self._keepalive_noise)
+            interval = self._keepalive_base_interval + noise
+
+            # Wait for randomized interval
+            if self._stop_keepalive.wait(timeout=interval):
+                break  # Stop requested
+
+            # Send ping if connected
+            if self._connected and self._device:
+                try:
+                    with self._lock:
+                        if self._connected and self._device:
+                            self._device.adb_shell("echo keepalive")
+                            logger.debug(f"[FireTV] Keep-alive ping sent (next in ~{interval/60:.1f}m)")
+                except Exception as e:
+                    logger.warning(f"[FireTV] Keep-alive ping failed: {e}")
+
+        logger.debug("[FireTV] Keep-alive thread stopped")
 
     def is_connected(self) -> bool:
         """Check if currently connected to Fire TV."""

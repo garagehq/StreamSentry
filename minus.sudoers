@@ -1,19 +1,67 @@
-# Minus sudoers configuration
-# Allows managing the log file without password
-# Install with: sudo cp minus.sudoers /etc/sudoers.d/minus
+# Minus HDMI Ad Blocker - passwordless sudo commands for radxa user
+# Install with: sudo cp minus.sudoers /etc/sudoers.d/minus && sudo chmod 440 /etc/sudoers.d/minus
+# Validate with: sudo visudo -c -f /etc/sudoers.d/minus
+# Updated: 2026-01-23
 
-# Allow all users to manage minus log file
-ALL ALL=(ALL) NOPASSWD: /usr/bin/rm -f /tmp/minus.log
-ALL ALL=(ALL) NOPASSWD: /usr/bin/rm -f /tmp/minus.log.*
-ALL ALL=(ALL) NOPASSWD: /usr/bin/touch /tmp/minus.log
-ALL ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /tmp/minus.log
-
-# Allow all users to manage the minus systemd service
-radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl start minus
-radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl start minus *
-radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop minus
-radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop minus *
+# =============================================================================
+# Service Management
+# =============================================================================
 radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart minus
-radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart minus *
+radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop minus
+radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl start minus
 radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl status minus
 radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl status minus *
+radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
+radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable minus
+radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable minus
+radxa ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active minus
+
+# =============================================================================
+# Journal Access (full access for minus and system logs)
+# =============================================================================
+radxa ALL=(ALL) NOPASSWD: /usr/bin/journalctl *
+radxa ALL=(ALL) NOPASSWD: /usr/bin/journalctl
+
+# =============================================================================
+# Log File Management
+# =============================================================================
+radxa ALL=(ALL) NOPASSWD: /usr/bin/rm -f /tmp/minus.log*
+radxa ALL=(ALL) NOPASSWD: /usr/bin/rm /tmp/minus.log*
+radxa ALL=(ALL) NOPASSWD: /usr/bin/chown radxa /tmp/minus.log*
+radxa ALL=(ALL) NOPASSWD: /usr/bin/chmod * /tmp/minus.log*
+
+# =============================================================================
+# Process Management
+# =============================================================================
+radxa ALL=(ALL) NOPASSWD: /usr/bin/fuser -k /dev/video0
+radxa ALL=(ALL) NOPASSWD: /usr/bin/fuser /dev/video0
+radxa ALL=(ALL) NOPASSWD: /usr/bin/pkill -9 ustreamer
+radxa ALL=(ALL) NOPASSWD: /usr/bin/pkill ustreamer
+radxa ALL=(ALL) NOPASSWD: /usr/bin/pkill -9 -f python3.*minus.py
+radxa ALL=(ALL) NOPASSWD: /usr/bin/killall ustreamer
+radxa ALL=(ALL) NOPASSWD: /usr/bin/killall -9 ustreamer
+
+# =============================================================================
+# Network Management (WiFi, NetworkManager)
+# =============================================================================
+radxa ALL=(ALL) NOPASSWD: /usr/bin/nmcli *
+radxa ALL=(ALL) NOPASSWD: /usr/bin/nmcli
+radxa ALL=(ALL) NOPASSWD: /usr/sbin/iw *
+radxa ALL=(ALL) NOPASSWD: /usr/sbin/iwconfig *
+
+# =============================================================================
+# Hardware Access (V4L2, DRM, HDMI)
+# =============================================================================
+radxa ALL=(ALL) NOPASSWD: /usr/bin/v4l2-ctl *
+radxa ALL=(ALL) NOPASSWD: /usr/bin/modetest *
+
+# =============================================================================
+# System Information
+# =============================================================================
+radxa ALL=(ALL) NOPASSWD: /usr/bin/dmesg *
+radxa ALL=(ALL) NOPASSWD: /usr/bin/dmesg
+
+# =============================================================================
+# Console/TTY Management
+# =============================================================================
+radxa ALL=(ALL) NOPASSWD: /usr/bin/chvt *

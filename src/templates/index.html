@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Minus</title>
+    <title>MINUS</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="container">
         <!-- Header -->
         <header>
-            <h1>Minus</h1>
+            <h1>MINUS<span class="cursor">_</span></h1>
             <div class="header-controls">
                 <div id="connection-status" class="status-dot" title="Connection status"></div>
             </div>
@@ -224,6 +224,19 @@
                 </div>
             </section>
 
+            <!-- Fire TV Settings -->
+            <section class="settings-section">
+                <h2>Fire TV Settings</h2>
+                <div class="setting-item">
+                    <span class="setting-label">Keep-Alive Pings</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="keepalive-toggle" onchange="toggleKeepalive(this.checked)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <p class="help-text">Sends periodic pings to prevent Fire TV ADB disconnects (every ~5 minutes with jitter).</p>
+            </section>
+
             <!-- WiFi Management -->
             <section class="wifi-section">
                 <h2>WiFi Networks</h2>
@@ -294,6 +307,15 @@
             </ul>
         </div>
     </div>
+
+    <!-- System Footer -->
+    <footer class="system-footer">
+        <span class="footer-item" id="footer-version">MINUS v1.0</span>
+        <span class="footer-separator">|</span>
+        <span class="footer-item" id="footer-host">--</span>
+        <span class="footer-separator">|</span>
+        <span class="footer-item"><span class="blink">●</span> <span id="footer-status">INITIALIZING</span></span>
+    </footer>
 
     <!-- WiFi Password Modal -->
     <div id="wifi-modal" class="modal hidden">
@@ -442,6 +464,19 @@
                 const hdmiStatus = document.getElementById('hdmi-status');
                 hdmiStatus.textContent = status.hdmi_signal ? 'HDMI: OK' : 'HDMI: No Signal';
                 hdmiStatus.className = status.hdmi_signal ? 'system-badge ok' : 'system-badge warning';
+
+                // Footer status
+                const footerStatus = document.getElementById('footer-status');
+                if (status.blocking) {
+                    footerStatus.textContent = 'BLOCKING';
+                    footerStatus.className = 'status-blocking';
+                } else if (status.paused) {
+                    footerStatus.textContent = 'PAUSED';
+                    footerStatus.className = 'status-paused';
+                } else {
+                    footerStatus.textContent = 'MONITORING';
+                    footerStatus.className = 'status-ok';
+                }
 
             } catch (error) {
                 console.error('Status update failed:', error);
@@ -714,6 +749,28 @@
                 document.getElementById('debug-toggle').checked = data.debug_overlay_enabled;
             } catch (error) {
                 console.error('Debug overlay state fetch failed:', error);
+            }
+        }
+
+        async function toggleKeepalive(enabled) {
+            try {
+                const endpoint = enabled ? '/api/firetv-keepalive/enable' : '/api/firetv-keepalive/disable';
+                const response = await fetch(endpoint, { method: 'POST' });
+                if (!response.ok) throw new Error('Keep-alive toggle failed');
+            } catch (error) {
+                console.error('Keep-alive toggle failed:', error);
+                document.getElementById('keepalive-toggle').checked = !enabled;
+            }
+        }
+
+        async function fetchKeepaliveState() {
+            try {
+                const response = await fetch('/api/firetv-keepalive');
+                if (!response.ok) return;
+                const data = await response.json();
+                document.getElementById('keepalive-toggle').checked = data.keepalive_enabled;
+            } catch (error) {
+                console.error('Keep-alive state fetch failed:', error);
             }
         }
 
@@ -1169,11 +1226,17 @@
         notificationsEnabled = localStorage.getItem('notificationsEnabled') === 'true';
         document.getElementById('notifications-toggle').checked = notificationsEnabled;
 
+        // Initialize footer hostname
+        fetch('/api/network').then(r => r.json()).then(data => {
+            document.getElementById('footer-host').textContent = data.hostname || 'unknown';
+        }).catch(() => {});
+
         updateStatus();
         updateStats();
         updateDetections();
         fetchPreviewState();
         fetchDebugOverlayState();
+        fetchKeepaliveState();
         updateFireTVStatus();
 
         setInterval(updateStatus, 1000);

@@ -220,13 +220,17 @@ class VLMManager:
             image_path: Path to image file (JPEG/PNG)
 
         Returns:
-            tuple: (is_ad, response_text, elapsed_time)
+            tuple: (is_ad, response_text, elapsed_time, confidence)
+                - is_ad: bool, whether the VLM thinks this is an ad
+                - response_text: str, raw response from VLM
+                - elapsed_time: float, inference time in seconds
+                - confidence: float, 0.0-1.0 confidence score
         """
         if not self.is_ready:
-            return False, "VLM not ready", 0
+            return False, "VLM not ready", 0, 0.0
 
         if not os.path.exists(image_path):
-            return False, f"Image not found: {image_path}", 0
+            return False, f"Image not found: {image_path}", 0, 0.0
 
         # Import bfloat16 here
         from ml_dtypes import bfloat16
@@ -284,34 +288,77 @@ class VLMManager:
                 )
 
                 elapsed = time.time() - start_time
-                is_ad = self._is_ad_response(response)
+                is_ad, confidence = self._is_ad_response(response)
 
-                return is_ad, response, elapsed
+                return is_ad, response, elapsed, confidence
 
             except Exception as e:
                 logger.error(f"VLM inference error: {e}")
                 import traceback
                 traceback.print_exc()
-                return False, str(e), time.time() - start_time
+                return False, str(e), time.time() - start_time, 0.0
+
+    def _parse_confidence(self, response):
+        """
+        Parse confidence level from VLM response.
+
+        Returns:
+            float: Confidence score 0.0-1.0
+            - 0.9-1.0: High confidence (definitely, clearly, certainly)
+            - 0.6-0.8: Medium confidence (default, no qualifiers)
+            - 0.3-0.5: Low confidence (maybe, possibly, might)
+            - 0.1-0.2: Very low confidence (uncertain, not sure)
+        """
+        r = response.lower()
+
+        # High confidence indicators
+        high_conf = ['definitely', 'clearly', 'certainly', 'absolutely',
+                     '100%', 'sure', 'obvious', 'without doubt', 'no doubt']
+        for word in high_conf:
+            if word in r:
+                return 0.95
+
+        # Low confidence indicators
+        low_conf = ['maybe', 'possibly', 'might', 'could be', 'perhaps',
+                    'probably', 'likely', 'appears to', 'seems to', 'looks like']
+        for word in low_conf:
+            if word in r:
+                return 0.5
+
+        # Very low confidence indicators
+        very_low = ['not sure', 'uncertain', 'unclear', 'hard to tell',
+                    'difficult to say', 'cannot determine', "can't tell"]
+        for word in very_low:
+            if word in r:
+                return 0.3
+
+        # Default medium confidence
+        return 0.75
 
     def _is_ad_response(self, response):
-        """Check if VLM response indicates an ad - STRICT parsing to reduce false positives."""
+        """
+        Check if VLM response indicates an ad - STRICT parsing to reduce false positives.
+
+        Returns:
+            tuple: (is_ad: bool, confidence: float)
+        """
         r = response.lower().strip()
+        confidence = self._parse_confidence(response)
 
         # Check for explicit No first (bias toward not blocking)
         if r.startswith('no') or r == 'n':
-            return False
+            return False, confidence
 
         # Check for explicit Yes at start only
         if r.startswith('yes') or r == 'y':
-            return True
+            return True, confidence
 
         # Check first word only (stricter than first 3 words)
         first_word = r.split()[0] if r.split() else ''
         if first_word == 'no' or first_word == 'no,' or first_word == 'no.':
-            return False
+            return False, confidence
         if first_word == 'yes' or first_word == 'yes,' or first_word == 'yes.':
-            return True
+            return True, confidence
 
         # Check for explicit negation phrases (these indicate NOT an ad)
         non_ad_phrases = [
@@ -323,16 +370,17 @@ class VLMManager:
         ]
         for phrase in non_ad_phrases:
             if phrase in r:
-                return False
+                return False, confidence
 
         # Only mark as ad if explicitly stated as commercial/tv ad
         ad_phrases = ['tv commercial', 'commercial break', 'video advertisement', 'this is a commercial']
         for phrase in ad_phrases:
             if phrase in r:
-                return True
+                return True, confidence
 
         # Default to NOT an ad if uncertain (conservative - avoid false positives)
-        return False
+        # Very low confidence for uncertain responses
+        return False, 0.3
 
     def release(self):
         """Release resources - clean up model components."""

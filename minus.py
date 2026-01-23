@@ -255,9 +255,28 @@ class Minus:
             'surprise me', 'see more', 'for you',
             'recently added', 'top picks', 'movies', 'tv shows'
         }
+
+        # Video player interface keywords - suppress VLM false positives on video UIs
+        # VLM often thinks video player interfaces are ads
+        self.video_interface_keywords = {
+            # Video player controls/info
+            'subscribe', 'subscribed', 'description', 'comments',
+            'views', 'likes', 'share', 'save', 'download',
+            # Time indicators (e.g., "3 years ago", "5 months ago")
+            'ago', 'year', 'month', 'week', 'day', 'hour',
+            # Music/video platforms
+            'colors', 'vevo', 'official', 'music video', 'lyric',
+            # Channel indicators
+            'channel', 'playlist', 'queue', 'autoplay',
+            # YouTube specific
+            'show more', 'show less', 'read more',
+        }
+
         self.last_ocr_texts = []            # Last OCR detected texts
         self.home_screen_detected = False   # True if home screen keywords found
         self.home_screen_detect_time = 0    # When home screen was last detected
+        self.video_interface_detected = False  # True if video player interface detected
+        self.video_interface_detect_time = 0   # When video interface was last detected
 
         # Combined ad detection state
         self.ad_detected = False
@@ -271,7 +290,7 @@ class Minus:
         self.MIN_BLOCKING_DURATION = 3.0
         self.OCR_STOP_THRESHOLD = 3
         self.VLM_STOP_THRESHOLD = 2
-        self.SKIP_DELAY_SECONDS = 11.0  # Wait 11s after ad starts before attempting skip
+        self.SKIP_DELAY_SECONDS = 4.5  # Wait 4s after ad starts before attempting skip (skip buttons rarely appear sooner)
 
         self._state_lock = threading.Lock()
 
@@ -315,12 +334,20 @@ class Minus:
         self.fire_tv_controller = None
         self._fire_tv_setup_thread = None
 
-        # Skip opportunity state
+        # Skip opportunity state - CONSERVATIVE approach to avoid accidental pauses
+        # Key principle: Only try to skip ONCE per ad. If it doesn't work, don't retry.
         self.skip_available = False  # True when "Skip" button is ready (no countdown)
-        self.skip_countdown = None   # Countdown seconds if not yet skippable
+        self.skip_countdown = None   # Current countdown value (for tracking transitions)
+        self.last_skip_countdown = None  # Previous countdown value (for detecting 1->0 transition)
         self.last_skip_text = None   # The detected skip text
-        self.last_skip_time = 0      # When skip was last detected
-        self.skip_attempts = 0       # How many times we would have skipped
+        self.skip_attempted_this_ad = False  # Have we already tried to skip this ad?
+        self.last_skip_attempt_time = 0  # When we last attempted a skip
+        self.SKIP_ATTEMPT_COOLDOWN = 10.0  # Don't try again for 10s after ANY attempt (prevents pause spam)
+
+        # Accidental pause detection
+        self.blocking_end_time = 0  # When blocking last ended
+        self.PAUSE_DETECT_WINDOW = 1.5  # Window after skip to detect accidental pause
+        self.accidental_pause_detected = False
 
         # Probe DRM output to auto-detect connector, plane, resolution, and audio device
         if config.drm_connector_id is None or config.drm_plane_id is None or config.output_width is None or config.audio_playback_device is None:
@@ -811,7 +838,7 @@ class Minus:
             'skip_available': self.skip_available,
             'skip_countdown': self.skip_countdown,
             'skip_text': self.last_skip_text,
-            'skip_attempts': self.skip_attempts,
+            'skip_attempted': self.skip_attempted_this_ad,
 
             # Fire TV status
             'fire_tv_connected': self.fire_tv_controller is not None and self.fire_tv_controller.is_connected() if self.fire_tv_controller else False,
@@ -845,26 +872,28 @@ class Minus:
             return True
         return self._compare_frames(frame, self.vlm_prev_frame) > self.scene_change_threshold
 
-    def _add_vlm_decision(self, is_ad: bool):
-        """Add a VLM decision to the sliding window history."""
+    def _add_vlm_decision(self, is_ad: bool, confidence: float = 0.75):
+        """Add a VLM decision to the sliding window history with confidence."""
         now = time.time()
-        self.vlm_decision_history.append((now, is_ad))
+        self.vlm_decision_history.append((now, is_ad, confidence))
 
         # Prune old decisions outside the window
         cutoff = now - self.vlm_history_window
         self.vlm_decision_history = [
-            (t, decision) for t, decision in self.vlm_decision_history
-            if t >= cutoff
+            entry for entry in self.vlm_decision_history
+            if entry[0] >= cutoff
         ]
 
     def _get_vlm_agreement(self) -> tuple:
         """
-        Calculate VLM agreement percentage from sliding window.
+        Calculate VLM agreement percentage from sliding window using confidence-weighted votes.
+
+        High-confidence decisions count more than low-confidence ones.
 
         Returns:
             (ad_ratio, no_ad_ratio, total_decisions)
-            - ad_ratio: fraction of decisions that were 'ad' (0.0-1.0)
-            - no_ad_ratio: fraction of decisions that were 'no-ad' (0.0-1.0)
+            - ad_ratio: confidence-weighted fraction of 'ad' decisions (0.0-1.0)
+            - no_ad_ratio: confidence-weighted fraction of 'no-ad' decisions (0.0-1.0)
             - total_decisions: number of decisions in window
         """
         if not self.vlm_decision_history:
@@ -873,17 +902,30 @@ class Minus:
         now = time.time()
         cutoff = now - self.vlm_history_window
 
-        # Filter to recent decisions
-        recent = [(t, decision) for t, decision in self.vlm_decision_history if t >= cutoff]
+        # Filter to recent decisions (handle both old and new tuple formats)
+        recent = []
+        for entry in self.vlm_decision_history:
+            if entry[0] >= cutoff:
+                if len(entry) == 3:
+                    recent.append(entry)  # (time, is_ad, confidence)
+                else:
+                    # Legacy format without confidence - use default 0.75
+                    recent.append((entry[0], entry[1], 0.75))
 
         if not recent:
             return 0.0, 0.0, 0
 
         total = len(recent)
-        ad_count = sum(1 for _, is_ad in recent if is_ad)
-        no_ad_count = total - ad_count
 
-        return ad_count / total, no_ad_count / total, total
+        # Confidence-weighted voting
+        ad_weight = sum(conf for _, is_ad, conf in recent if is_ad)
+        no_ad_weight = sum(conf for _, is_ad, conf in recent if not is_ad)
+        total_weight = ad_weight + no_ad_weight
+
+        if total_weight == 0:
+            return 0.0, 0.0, total
+
+        return ad_weight / total_weight, no_ad_weight / total_weight, total
 
     def _should_vlm_start_blocking(self) -> bool:
         """
@@ -1153,10 +1195,17 @@ class Minus:
                 elif self.vlm_ad_detected:
                     # VLM alone - vlm_ad_detected is now managed by sliding window
                     # which already requires sustained agreement before setting True
-                    # BUT suppress if OCR recently detected home screen keywords
+                    # BUT suppress if OCR recently detected home screen or video interface keywords
+                    # ALSO suppress if screen is static (prevents blocking on paused video interfaces)
                     if self.home_screen_detected:
                         ad_ratio, _, total = self._get_vlm_agreement()
                         logger.info(f"VLM suppressed - home screen detected (OCR cross-validation). Agreement was {ad_ratio*100:.0f}% of {total}")
+                    elif self.video_interface_detected:
+                        ad_ratio, _, total = self._get_vlm_agreement()
+                        logger.info(f"VLM suppressed - video interface detected (prevents false positive on player UI). Agreement was {ad_ratio*100:.0f}% of {total}")
+                    elif self.static_blocking_suppressed:
+                        ad_ratio, _, total = self._get_vlm_agreement()
+                        logger.info(f"VLM suppressed - static screen detected (prevents false positive on paused content). Agreement was {ad_ratio*100:.0f}% of {total}")
                     else:
                         should_start = True
                         source = "vlm"
@@ -1167,6 +1216,10 @@ class Minus:
                     self.ad_detected = True
                     self.blocking_start_time = now
                     self.blocking_source = source
+                    # Reset skip and pause detection for new ad
+                    self.accidental_pause_detected = False
+                    self.skip_attempted_this_ad = False
+                    self.last_skip_countdown = None
                     source_display = source.upper() if source != "both" else "OCR+VLM"
                     logger.warning(f"AD BLOCKING STARTED ({source_display})")
 
@@ -1192,6 +1245,13 @@ class Minus:
                         # (OCR never detected the ad, so OCR's opinion is unreliable here)
                         # Use simple consecutive count, not sliding window (for responsiveness)
                         should_stop = vlm_says_stop
+
+                        # SAFEGUARD: Auto-stop VLM-only blocking after 90 seconds
+                        # This prevents extended false positives on video interfaces
+                        # Real ads rarely last more than 60-90 seconds
+                        if blocking_elapsed >= 90.0 and not should_stop:
+                            logger.warning(f"[VLM] Auto-stopping VLM-only blocking after {blocking_elapsed:.0f}s (safeguard)")
+                            should_stop = True
                     else:
                         # OCR triggered (alone or with VLM) - OCR is authoritative for stopping
                         # This ensures we don't block longer than necessary after ad ends
@@ -1204,6 +1264,13 @@ class Minus:
                     # Also clear VLM state so it doesn't immediately re-trigger
                     self.vlm_ad_detected = False
                     self.vlm_decision_history.clear()
+                    # Track when blocking ended (for accidental pause detection)
+                    self.blocking_end_time = time.time()
+                    # Reset skip state for next ad
+                    self.skip_available = False
+                    self.skip_attempted_this_ad = False
+                    self.last_skip_countdown = None
+                    self.skip_countdown = None
                     logger.warning(f"AD BLOCKING ENDED after {blocking_elapsed:.1f}s (stopped by {source_was.upper() if source_was else 'unknown'})")
 
             # Update overlay (respect pause state and static screen suppression)
@@ -1294,6 +1361,23 @@ class Minus:
                         logger.info(f"[Static] Screen static for {static_time:.1f}s / {self.static_ocr_count} OCR cycles - suppressing blocking")
                         self.static_blocking_suppressed = True
                         self.screen_became_dynamic_time = 0  # Reset cooldown timer
+
+                        # Accidental pause detection: if screen went static right after we skipped,
+                        # we may have accidentally paused the video. Send PLAY to resume.
+                        time_since_blocking_end = now - self.blocking_end_time if self.blocking_end_time > 0 else float('inf')
+                        time_since_skip_success = now - self.last_skip_success_time if self.last_skip_success_time > 0 else float('inf')
+
+                        if (time_since_blocking_end < self.PAUSE_DETECT_WINDOW and
+                            time_since_skip_success < self.PAUSE_DETECT_WINDOW and
+                            not self.accidental_pause_detected):
+                            logger.warning(f"[PAUSE] Detected potential accidental pause! Screen static {time_since_blocking_end:.1f}s after blocking ended, {time_since_skip_success:.1f}s after skip. Sending PLAY...")
+                            self.accidental_pause_detected = True  # Only try once per ad
+                            if self.fire_tv_controller and self.fire_tv_controller.is_connected():
+                                if self.fire_tv_controller.send_command("play"):
+                                    logger.info("[PAUSE] PLAY command sent - video should resume")
+                                else:
+                                    logger.warning("[PAUSE] Failed to send PLAY command")
+
                         # Save screenshot as non-ad training data (still ads shouldn't be blocked)
                         if self.ad_detected:
                             self.screenshot_manager.save_static_ad_screenshot(frame)
@@ -1350,10 +1434,12 @@ class Minus:
 
                 ad_detected, matched_keywords, all_texts, is_terminal = self.ocr.check_ad_keywords(ocr_results)
 
-                # Store OCR texts and check for home screen keywords
+                # Store OCR texts and check for home screen / video interface keywords
                 self.last_ocr_texts = all_texts
                 if all_texts:
                     combined_text = ' '.join(all_texts).lower()
+
+                    # Home screen detection
                     home_keywords_found = [kw for kw in self.home_screen_keywords if kw in combined_text]
                     if len(home_keywords_found) >= 2:  # Require 2+ keywords to confirm home screen
                         self.home_screen_detected = True
@@ -1361,8 +1447,16 @@ class Minus:
                     elif time.time() - self.home_screen_detect_time > 5.0:  # Clear after 5s
                         self.home_screen_detected = False
 
+                    # Video player interface detection (suppresses VLM false positives)
+                    video_keywords_found = [kw for kw in self.video_interface_keywords if kw in combined_text]
+                    if len(video_keywords_found) >= 2:  # Require 2+ keywords to confirm video interface
+                        self.video_interface_detected = True
+                        self.video_interface_detect_time = time.time()
+                    elif time.time() - self.video_interface_detect_time > 5.0:  # Clear after 5s
+                        self.video_interface_detected = False
+
                 # Check for skip opportunity (for Fire TV ad skipping)
-                # Only attempt skip after SKIP_DELAY_SECONDS since ad blocking started
+                # CONSERVATIVE APPROACH: Only try to skip ONCE per ad to avoid accidental pauses
                 is_skippable, skip_text, countdown = check_skip_opportunity(all_texts)
 
                 # Calculate time since ad blocking started
@@ -1370,40 +1464,74 @@ class Minus:
                 if self.ad_detected and self.blocking_start_time > 0:
                     time_since_blocking = time.time() - self.blocking_start_time
 
-                # Only allow skip after delay period (skip button never appears in first few seconds)
-                skip_delay_passed = time_since_blocking >= self.SKIP_DELAY_SECONDS
+                # Track countdown transitions (for pre-emptive skip at 1->0)
+                countdown_just_hit_zero = (
+                    self.last_skip_countdown is not None and
+                    self.last_skip_countdown == 1 and
+                    (countdown == 0 or is_skippable)
+                )
 
-                if is_skippable and skip_delay_passed:
-                    if not self.skip_available:
-                        self.skip_available = True
-                        self.last_skip_text = skip_text
-                        self.last_skip_time = time.time()
-                        self.skip_attempts += 1
-                        logger.warning(f"[SKIP] >>> SKIP BUTTON READY! Pressing CENTER to skip. Text: '{skip_text}' (attempt #{self.skip_attempts})")
-                        # Actually skip the ad by pressing the center/select button
-                        if self.try_skip_ad():
-                            logger.info(f"[SKIP] Skip command sent successfully!")
-                            # Record time saved (estimate ~30s per skipped ad)
-                            if self.ad_blocker:
-                                self.ad_blocker.add_time_saved(30.0)
-                        else:
-                            logger.warning(f"[SKIP] Skip command failed or Fire TV not connected")
-                    self.skip_countdown = 0
-                elif is_skippable and not skip_delay_passed:
-                    # Skip button visible but delay not passed yet
-                    wait_remaining = int(self.SKIP_DELAY_SECONDS - time_since_blocking)
-                    if wait_remaining > 0:
-                        logger.debug(f"[SKIP] Skip visible but waiting {wait_remaining}s more (delay: {self.SKIP_DELAY_SECONDS}s)")
-                        if self.ad_blocker:
-                            self.ad_blocker.set_skip_status(False, f"Wait {wait_remaining}s")
-                elif countdown is not None:
-                    self.skip_available = False
+                # Update countdown tracking
+                if countdown is not None:
+                    self.last_skip_countdown = countdown
                     self.skip_countdown = countdown
                     self.last_skip_text = skip_text
-                    logger.info(f"[SKIP] Skip countdown: {countdown}s remaining. Text: '{skip_text}'")
                     if self.ad_blocker:
                         self.ad_blocker.set_skip_status(False, f"Skip in {countdown}s")
-                else:
+                elif is_skippable:
+                    self.skip_countdown = 0
+                    self.last_skip_countdown = 0
+
+                # Only allow skip after delay period
+                skip_delay_passed = time_since_blocking >= self.SKIP_DELAY_SECONDS
+
+                # Check cooldown since last attempt
+                time_since_attempt = time.time() - self.last_skip_attempt_time
+                in_cooldown = time_since_attempt < self.SKIP_ATTEMPT_COOLDOWN
+
+                # Determine if we should try to skip
+                # Conditions: skippable, delay passed, haven't tried this ad, not in cooldown
+                should_skip = (
+                    is_skippable and
+                    skip_delay_passed and
+                    not self.skip_attempted_this_ad and
+                    not in_cooldown
+                )
+
+                # Also skip on countdown 1->0 transition (pre-emptive)
+                if countdown_just_hit_zero and not self.skip_attempted_this_ad and not in_cooldown:
+                    should_skip = True
+                    logger.info("[SKIP] Countdown hit zero - attempting skip")
+
+                if should_skip:
+                    self.skip_available = True
+                    self.last_skip_text = skip_text
+                    self.skip_attempted_this_ad = True  # Mark as attempted - NO RETRIES
+                    self.last_skip_attempt_time = time.time()
+
+                    logger.warning(f"[SKIP] >>> Attempting skip (ONE attempt only). Text: '{skip_text}'")
+
+                    if self.try_skip_ad():
+                        logger.info(f"[SKIP] Skip command sent! Waiting to see if it worked...")
+                        if self.ad_blocker:
+                            self.ad_blocker.add_time_saved(30.0)
+                    else:
+                        logger.warning(f"[SKIP] Skip command failed (Fire TV not connected?)")
+
+                elif is_skippable and not skip_delay_passed:
+                    wait_remaining = int(self.SKIP_DELAY_SECONDS - time_since_blocking)
+                    if wait_remaining > 0 and self.ad_blocker:
+                        self.ad_blocker.set_skip_status(False, f"Wait {wait_remaining}s")
+
+                elif is_skippable and self.skip_attempted_this_ad:
+                    # Already tried - don't retry (this prevents pause spam)
+                    pass
+
+                elif is_skippable and in_cooldown:
+                    remaining = int(self.SKIP_ATTEMPT_COOLDOWN - time_since_attempt)
+                    logger.debug(f"[SKIP] In cooldown, {remaining}s remaining")
+
+                elif not is_skippable and countdown is None:
                     # No skip button detected
                     if self.skip_available:
                         logger.info("[SKIP] Skip button no longer visible")
@@ -1523,11 +1651,22 @@ class Minus:
                         logger.debug(f"VLM #{self.vlm_frame_count}: Force run after {self.vlm_scene_skip_count} skips")
 
                 cv2.imwrite(vlm_image_path, frame)
-                is_ad, response, elapsed = self.vlm.detect_ad(vlm_image_path)
+                is_ad, response, elapsed, confidence = self.vlm.detect_ad(vlm_image_path)
 
-                # Add decision to sliding window history
+                # Discard slow VLM responses - scene likely changed during inference
+                VLM_MAX_RELEVANT_TIME = 2.0
+                if elapsed > VLM_MAX_RELEVANT_TIME:
+                    ad_status = "AD" if is_ad else "NO-AD"
+                    response_preview = response[:30] if response else "no response"
+                    logger.warning(f"VLM #{self.vlm_frame_count}: {elapsed:.1f}s [{ad_status}] DISCARDED (took >{VLM_MAX_RELEVANT_TIME}s) \"{response_preview}\"")
+                    self.vlm_prev_frame = frame.copy()
+                    self.vlm_scene_skip_count = 0
+                    time.sleep(0.5)
+                    continue
+
+                # Add decision to sliding window history with confidence
                 now = time.time()
-                self._add_vlm_decision(is_ad)
+                self._add_vlm_decision(is_ad, confidence)
 
                 # Track state changes for waffle detection and logging
                 current_state = 'ad' if is_ad else 'no-ad'
@@ -1580,7 +1719,7 @@ class Minus:
 
                 ad_status = "AD" if is_ad else "NO-AD"
                 response_preview = response[:40] if response else "no response"
-                logger.info(f"VLM #{self.vlm_frame_count}: {elapsed:.1f}s [{ad_status}] \"{response_preview}\"")
+                logger.info(f"VLM #{self.vlm_frame_count}: {elapsed:.1f}s [{ad_status}] conf={confidence:.0%} \"{response_preview}\"")
 
                 self.vlm_prev_frame = frame.copy()
                 self.vlm_prev_frame_had_ad = is_ad
