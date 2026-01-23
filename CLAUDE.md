@@ -7,6 +7,14 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 - **FastVLM-1.5B** on Axera LLM 8850 NPU (~0.9s per frame)
 - **Spanish vocabulary practice** during ad blocks!
 
+## Visual Design
+
+See **[AESTHETICS.md](AESTHETICS.md)** for the complete visual design guide including:
+- Color palette (black background, matrix green, danger red, purple accents)
+- Typography (VT323 for display, IBM Plex Mono for body, DejaVu for TV overlays)
+- Component styling and animations
+- TV overlay layout specifications
+
 ## Architecture
 
 ```
@@ -523,8 +531,12 @@ The blocking overlay system uses ustreamer's native MPP blocking mode (`/blockin
 - All blocking compositing (background, preview, text) done in ustreamer's MPP encoder at 60fps
 - Control via HTTP API: `/blocking/set`, `/blocking/background`
 - FreeType TrueType font rendering:
-  - **DejaVu Sans Bold** for vocabulary text (centered, large)
-  - **DejaVu Sans Mono** for stats dashboard (bottom-left, monospace)
+  - **DejaVu Sans Bold** for vocabulary text (centered, large - clean and readable)
+  - **IBM Plex Mono** for stats dashboard (bottom-left, monospace)
+- Per-line multi-color text matching web UI aesthetic (see AESTHETICS.md):
+  - Purple for Spanish word
+  - Gray for pronunciation/example
+  - White for header/translation
 - Thread-safe with mutex protection for 4 parallel MPP encoder workers
 
 **Resolution Flexibility:**

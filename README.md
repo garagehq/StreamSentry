@@ -2,7 +2,7 @@
 
 HDMI passthrough with real-time ML-based ad detection and blocking using dual NPUs:
 - **PaddleOCR** on RK3588 NPU (~300ms per frame)
-- **Qwen3-VL-2B** on Axera LLM 8850 NPU (~1.5s per frame)
+- **FastVLM-1.5B** on Axera LLM 8850 NPU (~0.9s per frame)
 - **Audio passthrough** with auto-mute during ads
 - **Spanish vocabulary practice** during ad blocks!
 - **Web UI** for remote monitoring and control via Tailscale
@@ -41,9 +41,9 @@ Minus captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, w
               │                               │
      ┌────────┴────────┐           ┌──────────┴──────────┐
      │   OCR Worker    │           │    VLM Worker       │
-     │   PaddleOCR     │           │   Qwen3-VL-2B       │
+     │   PaddleOCR     │           │   FastVLM-1.5B      │
      │   RK3588 NPU    │           │   Axera LLM 8850    │
-     │   ~400ms        │           │   ~1.5s             │
+     │   ~400ms        │           │   ~0.9s             │
      └─────────────────┘           └─────────────────────┘
 ```
 
@@ -227,7 +227,7 @@ minus/
 │   └── test_modules.py   # Unit tests for all modules
 ├── src/
 │   ├── ocr.py            # PaddleOCR on RKNN NPU
-│   ├── vlm.py            # Qwen3-VL-2B on Axera NPU
+│   ├── vlm.py            # FastVLM-1.5B on Axera NPU
 │   ├── ad_blocker.py     # GStreamer video pipeline with input-selector
 │   ├── audio.py          # GStreamer audio passthrough with mute control
 │   ├── health.py         # Health monitor for all subsystems
@@ -306,21 +306,24 @@ RESULTS: 93/93 passed
 
 ## VLM Model
 
-The VLM uses **Qwen3-VL-2B-INT4** on the Axera LLM 8850 NPU:
+The VLM uses **FastVLM-1.5B** on the Axera LLM 8850 NPU:
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 96% on ad detection benchmark |
-| Inference | 1.3-1.7s per frame |
-| Model load | ~40s (once at startup) |
+| Accuracy | Better than 0.5B with fewer false positives |
+| Inference | ~0.9s per frame |
+| Model load | ~47s (once at startup) |
 | Prompt | "Is this an advertisement? Answer Yes or No." |
 
 Model location:
 ```
-/home/radxa/axera_models/Qwen3-VL-2B/
-├── main_axcl_aarch64_rebuilt
-├── qwen3_tokenizer.txt
-└── Qwen3-VL-2B-Instruct-AX650-c128_p1152-int4/
+/home/radxa/axera_models/FastVLM-1.5B/
+├── fastvlm_ax650_context_1k_prefill_640_int4/
+│   ├── image_encoder_512x512.axmodel
+│   ├── llava_qwen2_p128_l*.axmodel
+│   └── model.embed_tokens.weight.npy
+├── fastvlm_tokenizer/
+└── utils/
 ```
 
 ## Fire TV Control (Optional)
@@ -395,7 +398,7 @@ pkill -9 ustreamer    # Kill orphaned ustreamer
 **VLM not loading:**
 ```bash
 axcl_smi              # Check Axera card status
-ls /home/radxa/axera_models/Qwen3-VL-2B/  # Verify model files
+ls /home/radxa/axera_models/FastVLM-1.5B/  # Verify model files
 ```
 
 **Display issues:**
@@ -622,7 +625,7 @@ pyinstaller minus.spec
 
 **Note:** The executable still requires external model files at runtime:
 - PaddleOCR models in standard location
-- VLM models in `/home/radxa/axera_models/Qwen3-VL-2B/`
+- VLM models in `/home/radxa/axera_models/FastVLM-1.5B/`
 
 ## License
 

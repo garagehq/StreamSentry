@@ -328,20 +328,20 @@ class SystemNotification(NotificationOverlay):
 
     def show_vlm_loading(self):
         """Show VLM loading notification."""
-        text = "Loading VLM model...\n\nQwen3-VL-2B-INT4"
+        text = "[ LOADING VLM ]\n\nFastVLM-1.5B"
         self.show(text, duration=None)
 
     def show_vlm_ready(self):
         """Show VLM ready notification (auto-hides)."""
-        text = "VLM Ready\n\nAd detection active"
+        text = "[ VLM READY ]\n\nAD DETECTION ACTIVE"
         self.show(text, duration=5.0)
 
     def show_vlm_failed(self):
         """Show VLM load failure notification (auto-hides)."""
-        text = "VLM Load Failed\n\nOCR-only mode"
+        text = "[ VLM FAILED ]\n\nOCR-ONLY MODE"
         self.show(text, duration=8.0)
 
     def show_system_ready(self):
         """Show system ready notification (auto-hides)."""
-        text = "Minus Ready\n\nAd blocking active"
+        text = "[ MINUS READY ]\n\nAD BLOCKING ACTIVE"
         self.show(text, duration=5.0)

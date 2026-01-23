@@ -120,8 +120,8 @@ class DRMAdBlocker:
         # Animation settings
         self._animation_thread = None
         self._stop_animation = threading.Event()
-        self._animation_duration_start = 1.25
-        self._animation_duration_end = 0.5
+        self._animation_duration_start = 0.3  # Reduced from 1.25s for faster response
+        self._animation_duration_end = 0.25   # Reduced from 0.5s for faster unblock
         self._animating = False
         self._animation_direction = None
         self._animation_source = None
@@ -129,6 +129,12 @@ class DRMAdBlocker:
         # Text background box opacity (0=transparent, 255=opaque)
         # Default was 180, increased for better readability
         self._box_alpha = 220
+
+        # Text color in YUV (white - clean and readable, doesn't distract from vocabulary)
+        # White: Y=235, U=128, V=128
+        self._text_y = 235
+        self._text_u = 128
+        self._text_v = 128
 
         # Current vocabulary word tracking
         self._current_vocab = None  # (spanish, pronunciation, english, example)
@@ -390,7 +396,7 @@ class DRMAdBlocker:
             no_signal_pipeline = (
                 f"videotestsrc pattern=black ! "
                 f"video/x-raw,width=1920,height=1080,framerate=30/1 ! "
-                f"textoverlay name=no_signal_text text=\"NO SIGNAL\" "
+                f"textoverlay name=no_signal_text text=\"[ NO SIGNAL ]\" "
                 f"valignment=position halignment=position xpos=0.5 ypos=0.5 "
                 f"font-desc=\"Sans Bold 24\" ! "
                 f"videoconvert ! video/x-raw,format=NV12 ! "
@@ -491,13 +497,13 @@ class DRMAdBlocker:
 
                     # During corner celebration, cycle through spin text
                     if corner_hit_frames > 0:
-                        spin_chars = ['|', '/', '-', '\\']
+                        spin_chars = ['*', '+', 'x', '+']
                         spin_idx = (30 - corner_hit_frames) % 4
-                        spin_text = f"{spin_chars[spin_idx]} NO SIGNAL {spin_chars[spin_idx]}"
+                        spin_text = f"[{spin_chars[spin_idx]} NO SIGNAL {spin_chars[spin_idx]}]"
                         self._no_signal_textoverlay.set_property('text', spin_text)
                         corner_hit_frames -= 1
                     else:
-                        self._no_signal_textoverlay.set_property('text', 'NO SIGNAL')
+                        self._no_signal_textoverlay.set_property('text', '[ NO SIGNAL ]')
 
                 time.sleep(0.033)  # ~30fps animation
             except Exception:
@@ -530,7 +536,7 @@ class DRMAdBlocker:
             loading_pipeline = (
                 f"videotestsrc pattern=black ! "
                 f"video/x-raw,width=1920,height=1080,framerate=30/1 ! "
-                f"textoverlay name=loading_text text=\"Loading\" "
+                f"textoverlay name=loading_text text=\"[ INITIALIZING ]\" "
                 f"valignment=center halignment=center font-desc=\"Sans Bold 24\" ! "
                 f"videoconvert ! video/x-raw,format=NV12 ! "
                 f"kmssink plane-id={self.plane_id} connector-id={self.connector_id} sync=false"
@@ -592,7 +598,8 @@ class DRMAdBlocker:
         while not self._stop_loading_anim.is_set():
             if hasattr(self, '_loading_textoverlay') and self._loading_textoverlay:
                 dots = "." * dot_counts[idx]
-                text = f"Loading{dots}"
+                padding = " " * (4 - dot_counts[idx])  # Keep width consistent
+                text = f"[ INITIALIZING{dots}{padding}]"
                 try:
                     self._loading_textoverlay.set_property('text', text)
                 except Exception:
@@ -633,21 +640,27 @@ class DRMAdBlocker:
 
     def _get_blocking_text(self, source='default'):
         if source == 'hdmi_lost':
-            return "NO SIGNAL\n\nHDMI disconnected\n\nWaiting for signal..."
+            return "[ NO SIGNAL ]\n\nHDMI DISCONNECTED\n\nWaiting for signal..."
         if source == 'no_hdmi_device':
-            return "NO SIGNAL\n\nWaiting for HDMI signal..."
+            return "[ NO SIGNAL ]\n\nWAITING FOR HDMI..."
         if source == 'ocr':
-            header = "BLOCKING (OCR)"
+            header = "[ BLOCKING // OCR ]"
         elif source == 'vlm':
-            header = "BLOCKING (VLM)"
+            header = "[ BLOCKING // VLM ]"
         elif source == 'both':
-            header = "BLOCKING (OCR+VLM)"
+            header = "[ BLOCKING // OCR+VLM ]"
         else:
-            header = "BLOCKING AD"
+            header = "[ BLOCKING ]"
         vocab = random.choice(SPANISH_VOCABULARY)
         spanish, pronunciation, english, example = vocab
         self._current_vocab = vocab  # Track current word for API
-        return f"{header}\n\n{spanish}\n({pronunciation})\n= {english}\n\n{example}"
+        # Layout matching web UI vocabulary card:
+        # - Header (small)
+        # - Spanish word (prominent)
+        # - (pronunciation) in parentheses
+        # - = translation
+        # - "Example sentence" in quotes
+        return f"{header}\n\n{spanish}\n({pronunciation})\n\n= {english}\n\n\"{example}\""
 
     def _get_debug_text(self):
         uptime_str = "N/A"
@@ -677,9 +690,9 @@ class DRMAdBlocker:
         else:
             time_saved_str = f"{saved_secs}s"
 
-        debug_text = f"Uptime: {uptime_str}\nAds blocked: {self._total_ads_blocked}\nBlock time: {block_time_str}\nTime saved: {time_saved_str}"
+        debug_text = f"UPTIME    {uptime_str}\nBLOCKED   {self._total_ads_blocked}\nBLK TIME  {block_time_str}\nSAVED     {time_saved_str}"
         if self._skip_text:
-            debug_text += f"\n{self._skip_text}"
+            debug_text += f"\n> {self._skip_text}"
         return debug_text
 
     def _rotation_loop(self, source):
@@ -741,42 +754,55 @@ class DRMAdBlocker:
             self._stop_snapshot_buffer.wait(self._snapshot_interval)
 
     def _upload_background(self):
-        if not self._snapshot_buffer:
-            logger.warning("[DRMAdBlocker] No snapshots in buffer for background")
-            return False
-
-        logger.info(f"[DRMAdBlocker] Uploading background ({len(self._snapshot_buffer)} snapshots in buffer)")
-        snapshot_data = self._snapshot_buffer[0]['data']
-        original_size = len(snapshot_data)
-
+        """Upload pixelated background. Thread-safe for async execution."""
         try:
-            import cv2
-            import numpy as np
-            nparr = np.frombuffer(snapshot_data, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img is not None:
-                h, w = img.shape[:2]
-                factor = 20
-                small = cv2.resize(img, (max(1, w // factor), max(1, h // factor)), interpolation=cv2.INTER_LINEAR)
-                pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
-                pixelated = (pixelated * 0.6).astype(np.uint8)
-                _, encoded = cv2.imencode('.jpg', pixelated, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                snapshot_data = encoded.tobytes()
-                logger.info(f"[DRMAdBlocker] Pixelated background: {w}x{h}, {len(snapshot_data)} bytes")
-            else:
-                logger.warning("[DRMAdBlocker] Failed to decode snapshot for pixelation")
-        except ImportError:
-            logger.warning("[DRMAdBlocker] OpenCV not available for pixelation")
-        except Exception as e:
-            logger.warning(f"[DRMAdBlocker] Pixelation failed: {e}")
+            # Thread-safe: copy snapshot data atomically to avoid race conditions
+            try:
+                if not self._snapshot_buffer:
+                    logger.warning("[DRMAdBlocker] No snapshots in buffer for background")
+                    return False
+                # Copy data immediately to avoid race with buffer updates
+                snapshot_entry = self._snapshot_buffer[0]
+                snapshot_data = bytes(snapshot_entry['data'])  # Make a copy
+            except (IndexError, KeyError):
+                logger.warning("[DRMAdBlocker] Snapshot buffer race condition - skipping background")
+                return False
 
-        result = self._blocking_api_call('/blocking/background', data=snapshot_data, method='POST', timeout=2.0)
-        success = result is not None and result.get('ok', False)
-        if success:
-            logger.info(f"[DRMAdBlocker] Background uploaded successfully")
-        else:
-            logger.warning(f"[DRMAdBlocker] Background upload failed: {result}")
-        return success
+            logger.info(f"[DRMAdBlocker] Uploading background ({len(self._snapshot_buffer)} snapshots in buffer)")
+
+            try:
+                import cv2
+                import numpy as np
+                nparr = np.frombuffer(snapshot_data, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    factor = 20
+                    small = cv2.resize(img, (max(1, w // factor), max(1, h // factor)), interpolation=cv2.INTER_LINEAR)
+                    pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+                    pixelated = (pixelated * 0.6).astype(np.uint8)
+                    _, encoded = cv2.imencode('.jpg', pixelated, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    snapshot_data = encoded.tobytes()
+                    logger.info(f"[DRMAdBlocker] Pixelated background: {w}x{h}, {len(snapshot_data)} bytes")
+                else:
+                    logger.warning("[DRMAdBlocker] Failed to decode snapshot for pixelation")
+            except ImportError:
+                logger.warning("[DRMAdBlocker] OpenCV not available for pixelation")
+            except Exception as e:
+                logger.warning(f"[DRMAdBlocker] Pixelation failed: {e}")
+
+            result = self._blocking_api_call('/blocking/background', data=snapshot_data, method='POST', timeout=0.5)
+            success = result is not None and result.get('ok', False)
+            if success:
+                logger.info(f"[DRMAdBlocker] Background uploaded successfully")
+            else:
+                logger.warning(f"[DRMAdBlocker] Background upload failed: {result}")
+            return success
+
+        except Exception as e:
+            # Catch-all for thread safety - don't let exceptions crash the background thread
+            logger.exception(f"[DRMAdBlocker] Background upload error: {e}")
+            return False
 
     def _ease_out(self, t):
         return 1 - (1 - t) ** 2
@@ -952,18 +978,21 @@ class DRMAdBlocker:
 
             logger.info(f"[DRMAdBlocker] Starting blocking ({source})")
 
-            self._upload_background()
-
+            # Mute audio immediately
             if self.audio:
                 self.audio.mute()
 
+            # Enable blocking immediately (background will upload async)
             self._blocking_api_call('/blocking/set', {
                 'enabled': 'true',
                 'preview_x': '0', 'preview_y': '0',
                 'preview_w': str(self._frame_width), 'preview_h': str(self._frame_height),
                 'preview_enabled': 'true' if self._preview_enabled else 'false',
                 'text_vocab': '', 'text_stats': '',
-                'box_alpha': str(self._box_alpha)
+                'box_alpha': str(self._box_alpha),
+                'text_y': str(self._text_y),
+                'text_u': str(self._text_u),
+                'text_v': str(self._text_v)
             }, timeout=0.5)
 
             self.is_visible = True
@@ -971,6 +1000,9 @@ class DRMAdBlocker:
 
             if self.minus:
                 self.minus.blocking_active = True
+
+            # Upload background asynchronously (don't block animation start)
+            threading.Thread(target=self._upload_background, daemon=True, name="BackgroundUpload").start()
 
             self._start_animation('start', source)
 

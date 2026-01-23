@@ -6,7 +6,7 @@ Architecture:
 - ustreamer captures from HDMI-RX and serves MJPEG stream + HTTP snapshot
 - GStreamer with input-selector for instant video/blocking switching
 - PaddleOCR on RKNN NPU detects ad-related text (~400ms)
-- Qwen3-VL-2B on Axera NPU provides visual understanding (~1.5s)
+- FastVLM-1.5B on Axera NPU provides visual understanding (~0.9s)
 - Spanish vocabulary practice during ad blocks!
 
 Key insight: Using GStreamer input-selector allows instant switching between
@@ -16,7 +16,7 @@ Performance:
 - Display: 30fps via GStreamer kmssink (NV12 → DRM plane 72)
 - Snapshot: ~150ms non-blocking HTTP capture
 - OCR: ~400-500ms per frame on RKNN NPU
-- VLM: ~1.5s per frame on Axera NPU
+- VLM: ~0.9s per frame on Axera NPU
 - Ad blocking: INSTANT switching via input-selector
 """
 
@@ -305,7 +305,7 @@ class Minus:
         # (e.g., paused video with ad, YouTube landing page with sponsored content)
         self.STATIC_TIME_THRESHOLD = 2.5  # Seconds of static screen to trigger suppression
         self.STATIC_OCR_THRESHOLD = 4     # OCR iterations without scene change
-        self.DYNAMIC_COOLDOWN = 1.5       # Keep suppression for this long after screen becomes dynamic
+        self.DYNAMIC_COOLDOWN = 0.5       # Keep suppression for this long after screen becomes dynamic (reduced from 1.5s)
         self.static_since_time = 0        # When screen became static (0 = not static)
         self.static_ocr_count = 0         # OCR iterations without scene change
         self.static_blocking_suppressed = False  # Currently suppressing due to static
@@ -884,6 +884,57 @@ class Minus:
             entry for entry in self.vlm_decision_history
             if entry[0] >= cutoff
         ]
+
+    def _is_transition_frame(self, frame, threshold=15, black_threshold=30, uniformity_threshold=0.95) -> tuple:
+        """
+        Detect if a frame is a transition screen (mostly black or single solid color).
+
+        These frames often appear between ads or between an ad and content.
+        When blocking, we should hold through these rather than unblocking.
+
+        Args:
+            frame: BGR image (numpy array)
+            threshold: Max std dev to consider "uniform" color
+            black_threshold: Max brightness to consider "black"
+            uniformity_threshold: Min fraction of pixels that must be similar
+
+        Returns:
+            (is_transition, reason) - reason is 'black', 'solid_color', or None
+        """
+        try:
+            import numpy as np
+
+            if frame is None or frame.size == 0:
+                return False, None
+
+            # Convert to grayscale for analysis
+            if len(frame.shape) == 3:
+                gray = np.mean(frame, axis=2)
+            else:
+                gray = frame
+
+            mean_brightness = np.mean(gray)
+            std_brightness = np.std(gray)
+
+            # Check if mostly black (common ad transition)
+            if mean_brightness < black_threshold and std_brightness < threshold:
+                return True, 'black'
+
+            # Check if solid/uniform color (fade transitions)
+            if std_brightness < threshold:
+                return True, 'solid_color'
+
+            # Check if most pixels are very similar (near-uniform with minor noise)
+            median_val = np.median(gray)
+            similar_pixels = np.sum(np.abs(gray - median_val) < 20) / gray.size
+            if similar_pixels > uniformity_threshold:
+                return True, 'uniform'
+
+            return False, None
+
+        except Exception as e:
+            logger.debug(f"Transition detection error: {e}")
+            return False, None
 
     def _get_vlm_agreement(self) -> tuple:
         """
@@ -1567,12 +1618,20 @@ class Minus:
                         self.screenshot_manager.save_ad_screenshot(frame, matched_keywords, all_texts)
                         self.add_detection('OCR', all_texts, matched_keywords)
                 else:
-                    self.ocr_no_ad_count += 1
-                    self.ocr_ad_detection_count = 0
+                    # Check if this is a transition frame (black/solid color)
+                    # If we're blocking and see a transition, hold through it
+                    is_transition, transition_type = self._is_transition_frame(frame)
 
-                    if self.ocr_ad_detected and self.ocr_no_ad_count >= self.OCR_STOP_THRESHOLD:
-                        self.ocr_ad_detected = False
-                        logger.info(f"OCR: ad no longer detected (after {self.OCR_STOP_THRESHOLD} no-ads)")
+                    if self.ad_detected and is_transition:
+                        # Don't count transition frames as "no ad" - likely between ads
+                        logger.info(f"OCR #{self.frame_count}: Transition frame ({transition_type}) - holding block")
+                    else:
+                        self.ocr_no_ad_count += 1
+                        self.ocr_ad_detection_count = 0
+
+                        if self.ocr_ad_detected and self.ocr_no_ad_count >= self.OCR_STOP_THRESHOLD:
+                            self.ocr_ad_detected = False
+                            logger.info(f"OCR: ad no longer detected (after {self.OCR_STOP_THRESHOLD} no-ads)")
 
                 self._update_blocking_state()
 
@@ -1691,11 +1750,16 @@ class Minus:
                     self.vlm_consecutive_ad_count += 1
                     self.vlm_no_ad_count = 0
                 else:
-                    self.vlm_no_ad_count += 1
-                    # VLM "spastic" detection: save screenshot for training
-                    if 2 <= self.vlm_consecutive_ad_count <= 5:
-                        self.screenshot_manager.save_vlm_spastic_screenshot(frame, self.vlm_consecutive_ad_count)
-                    self.vlm_consecutive_ad_count = 0
+                    # Check for transition frame - don't count as "no ad" if blocking
+                    is_transition, transition_type = self._is_transition_frame(frame)
+                    if self.ad_detected and is_transition:
+                        logger.info(f"VLM #{self.vlm_frame_count}: Transition frame ({transition_type}) - holding block")
+                    else:
+                        self.vlm_no_ad_count += 1
+                        # VLM "spastic" detection: save screenshot for training
+                        if 2 <= self.vlm_consecutive_ad_count <= 5:
+                            self.screenshot_manager.save_vlm_spastic_screenshot(frame, self.vlm_consecutive_ad_count)
+                        self.vlm_consecutive_ad_count = 0
 
                 # Get current agreement stats for logging
                 ad_ratio, no_ad_ratio, total_decisions = self._get_vlm_agreement()
@@ -1848,7 +1912,7 @@ class Minus:
             if self.system_notification:
                 self.system_notification.show_vlm_loading()
 
-            logger.info("Loading VLM model (Qwen3-VL-2B-INT4)...")
+            logger.info("Loading VLM model (FastVLM-1.5B)...")
             if self.vlm.load_model():
                 logger.info("VLM model loaded successfully")
                 self.vlm_thread = threading.Thread(target=self.vlm_worker, daemon=True)
