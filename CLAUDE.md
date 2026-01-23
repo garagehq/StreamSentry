@@ -4,7 +4,7 @@
 
 HDMI passthrough with real-time ML-based ad detection and blocking using dual NPUs:
 - **PaddleOCR** on RK3588 NPU (~400ms per frame)
-- **Qwen3-VL-2B** on Axera LLM 8850 NPU (~1.5s per frame)
+- **FastVLM-0.5B** on Axera LLM 8850 NPU (~0.6s per frame)
 - **Spanish vocabulary practice** during ad blocks!
 
 ## Architecture
@@ -40,9 +40,9 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
      ┌────────┴────────┐           ┌──────────┴──────────┐
      │   OCR Worker    │           │    VLM Worker       │
      │  ┌───────────┐  │           │  ┌───────────────┐  │
-     │  │ PaddleOCR │  │           │  │ Qwen3-VL-2B   │  │
+     │  │ PaddleOCR │  │           │  │ FastVLM-0.5B  │  │
      │  │ RK3588 NPU│  │           │  │ Axera LLM 8850│  │
-     │  │ ~400ms    │  │           │  │ ~1.5s         │  │
+     │  │ ~400ms    │  │           │  │ ~0.6s         │  │
      │  └───────────┘  │           │  └───────────────┘  │
      └────────┬────────┘           └──────────┬──────────┘
               │                               │
@@ -72,7 +72,7 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 | `src/ad_blocker.py` | GStreamer video pipeline with input-selector |
 | `src/audio.py` | GStreamer audio passthrough with mute control |
 | `src/ocr.py` | PaddleOCR on RKNN NPU, keyword detection |
-| `src/vlm.py` | Qwen3-VL-2B on Axera NPU |
+| `src/vlm.py` | FastVLM-0.5B on Axera NPU |
 | `src/health.py` | Unified health monitor for all subsystems |
 | `src/webui.py` | Flask web UI for remote monitoring/control |
 | `src/fire_tv.py` | Fire TV ADB remote control for ad skipping |
@@ -136,8 +136,8 @@ This allows Minus to work with different displays without manual configuration.
 | Audio mute/unmute | **INSTANT** (volume element mute property) |
 | ustreamer MJPEG stream | **~60fps** (MPP hardware encoding at 4K) |
 | OCR latency | **100-200ms** capture + **250-400ms** inference |
-| VLM latency | 1.3-1.5s per frame |
-| VLM model load | ~40s (once at startup) |
+| VLM latency | **0.6s per frame** (2x faster with FastVLM-0.5B) |
+| VLM model load | **~13s** (once at startup, 3x faster than Qwen3) |
 | Snapshot capture | **~150ms** (4K JPEG download) |
 | OCR image size | 960x540 (downscaled from 4K for speed) |
 | ustreamer quality | 80% JPEG (MPP encoder) |
@@ -282,14 +282,14 @@ v4l2-ctl -d /dev/video0 --get-ctrl audio_present
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
 | `vlm_history_window` | 45s | How far back to look at VLM decisions |
-| `vlm_min_decisions` | 4 | Minimum decisions needed before acting |
-| `vlm_start_agreement` | 80% | Agreement threshold to start blocking |
-| `vlm_hysteresis_boost` | 10% | Extra agreement needed to change state |
+| `vlm_min_decisions` | 6 | Minimum decisions needed before acting |
+| `vlm_start_agreement` | 90% | Agreement threshold to start blocking |
+| `vlm_hysteresis_boost` | 5% | Extra agreement needed to change state |
 | `vlm_min_state_duration` | 8s | Cooldown after VLM state change |
 
 **Starting Blocking:**
 1. OCR detects ad → blocking starts immediately
-2. VLM detects ad (no OCR) → needs 80%+ agreement in sliding window
+2. VLM detects ad (no OCR) → needs 90%+ agreement in sliding window (6+ decisions)
 3. VLM with recent OCR → trusted, triggers blocking
 
 **Stopping Blocking:**
@@ -390,18 +390,32 @@ Example display:
 
 ## VLM Model
 
-**Qwen3-VL-2B-INT4** on Axera LLM 8850 NPU:
-- 96% accuracy on ad detection benchmark
-- 1.3-1.7s inference time
-- ~40s model load time (once)
-- No tokenizer service needed (uses local file)
+**FastVLM-0.5B** on Axera LLM 8850 NPU:
+- 94.7% accuracy on ad detection benchmark
+- **0.62s** inference time (2x faster than Qwen3-VL-2B!)
+- **~13s** model load time (3x faster than Qwen3-VL-2B!)
+- 98.6% precision, 90.7% recall
+- Uses Python axengine + transformers tokenizer
 
 ```
-/home/radxa/axera_models/Qwen3-VL-2B/
-├── main_axcl_aarch64_rebuilt
-├── qwen3_tokenizer.txt
-└── Qwen3-VL-2B-Instruct-AX650-c128_p1152-int4/
+/home/radxa/axera_models/FastVLM-0.5B/
+├── fastvlm_C128_CTX1024_P640_ax650/   # LLM decoder models
+│   ├── image_encoder_512x512_0.5b_ax650.axmodel  # Vision encoder
+│   ├── llava_qwen2_layer*.axmodel     # 24 decoder layers
+│   └── ...
+├── fastvlm_tokenizer/                  # Tokenizer files
+├── embeds/
+│   └── model.embed_tokens.weight.npy   # Embeddings (float32)
+└── utils/                              # LlavaConfig and InferManager
 ```
+
+**Why FastVLM-0.5B instead of Qwen3-VL-2B?**
+| Aspect | Qwen3-VL-2B | FastVLM-0.5B |
+|--------|-------------|--------------|
+| Accuracy | 96.0% | 94.7% |
+| Inference Time | 1.33s | **0.62s** |
+| Model Load Time | 38.9s | **12.6s** |
+| Parameters | 2B | **0.5B** |
 
 ## Dependencies
 
@@ -438,7 +452,11 @@ pip3 install --break-system-packages \
 **Note:** The `rknnlite` package is provided by Rockchip and may need to be installed from their SDK or a custom repository. On the Radxa board with NPU support, it may already be pre-installed.
 
 **Axera NPU (for VLM):**
-The Qwen3-VL-2B model runs on the Axera LLM 8850 NPU. The `axcl` tools and model files must be set up separately - see the Axera documentation.
+The FastVLM-0.5B model runs on the Axera LLM 8850 NPU. Required Python packages:
+```bash
+pip3 install --break-system-packages axengine transformers ml_dtypes
+```
+The `axengine` package requires the Axera AXCL runtime to be installed - see the Axera documentation.
 
 ## Troubleshooting
 
@@ -450,7 +468,8 @@ pkill -9 ustreamer    # Kill orphaned ustreamer
 
 **VLM not loading:**
 - Check Axera card: `axcl_smi`
-- Verify model files exist in `/home/radxa/axera_models/Qwen3-VL-2B/`
+- Verify model files exist in `/home/radxa/axera_models/FastVLM-0.5B/`
+- Ensure Python dependencies: `pip3 show axengine transformers ml_dtypes`
 
 **OCR not detecting:**
 - Test snapshot: `curl http://localhost:9090/snapshot -o test.jpg`
@@ -925,7 +944,7 @@ The service:
 ## Development Notes
 
 - Do NOT create v2, v3, v4 files - update existing files directly
-- VLM binary runs continuously via pexpect (not subprocess per frame)
+- VLM uses Python axengine for inference (not pexpect/C++ binary)
 - Both NPUs run in parallel without resource contention
 - No X11 required - pure DRM/KMS display
 - Single GStreamer pipeline with input-selector for instant switching

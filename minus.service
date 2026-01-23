@@ -15,6 +15,11 @@ WorkingDirectory=/home/radxa/Minus
 # Environment
 Environment=PYTHONUNBUFFERED=1
 Environment=OPENCV_LOG_LEVEL=ERROR
+Environment=PYTORCH_MATCHER_LOGLEVEL=WARNING
+Environment=TORCH_LOGS=-all
+Environment=TRANSFORMERS_VERBOSITY=error
+# Use FastVLM venv site-packages for VLM dependencies (ml_dtypes, transformers, axengine)
+Environment=PYTHONPATH=/home/radxa/axera_models/FastVLM-0.5B/fastvlm05_venv/lib/python3.11/site-packages:/home/radxa/.local/lib/python3.11/site-packages
 
 # Pre-start: ensure clean state
 # Stop display managers (gdm3, etc.) to release DRM/KMS resources

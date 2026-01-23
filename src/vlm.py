@@ -1,123 +1,216 @@
 """
 VLM (Vision Language Model) integration for Minus.
 
-Uses Qwen3-VL-2B-INT4 on Axera LLM 8850 NPU for ad detection.
+Uses FastVLM-0.5B on Axera LLM 8850 NPU for ad detection.
 Model is loaded ONCE at startup and kept running for fast inference.
-Each inference takes ~1.3 seconds.
+Each inference takes ~0.62 seconds (2x faster than Qwen3-VL-2B).
 """
 
 import os
 import sys
+
+# CRITICAL: Import torch early before any logging configuration
+# This avoids "Unknown level: 'WARNING'" errors in torch.fx.passes
+os.environ['PYTORCH_MATCHER_LOGLEVEL'] = 'WARNING'
+os.environ['TORCH_LOGS'] = '-all'
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+try:
+    import torch  # Import torch first to avoid logging conflicts
+except ImportError:
+    pass  # torch might not be installed, will fail later with clear message
+
 import time
 import logging
 import threading
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 logger = logging.getLogger('Minus.VLM')
 
-# Model paths
-QWEN3_MODEL_DIR = Path("/home/radxa/axera_models/Qwen3-VL-2B")
-AXMODEL_SUBDIR = "Qwen3-VL-2B-Instruct-AX650-c128_p1152-int4"
+# Model paths - FastVLM-0.5B
+FASTVLM_MODEL_DIR = Path("/home/radxa/axera_models/FastVLM-0.5B")
+LLM_MODEL_PATH = FASTVLM_MODEL_DIR / "fastvlm_C128_CTX1024_P640_ax650"
+TOKENIZER_PATH = FASTVLM_MODEL_DIR / "fastvlm_tokenizer"
+VISION_MODEL_PATH = LLM_MODEL_PATH / "image_encoder_512x512_0.5b_ax650.axmodel"
+EMBEDS_PATH = FASTVLM_MODEL_DIR / "embeds" / "model.embed_tokens.weight.npy"
+
+# Add utils path for LlavaConfig and InferManager
+UTILS_PATH = FASTVLM_MODEL_DIR / "utils"
 
 
 class VLMManager:
     """
-    Qwen3-VL-2B-INT4 manager for ad detection on Axera LLM 8850.
+    FastVLM-0.5B manager for ad detection on Axera LLM 8850.
 
     The model is loaded once at initialization and kept running.
-    Uses pexpect to communicate with the continuous-mode binary.
-    Each inference takes ~1.3 seconds.
+    Uses Python axengine for inference.
+    Each inference takes ~0.62 seconds (2x faster than Qwen3-VL-2B).
     """
 
+    # Simple prompt per original benchmark (94.7% accuracy)
+    # False positive reduction done via thresholds and OCR cross-validation
     AD_PROMPT = "Is this an advertisement? Answer Yes or No."
+    INPUT_SIZE = 512  # Vision encoder input size
+    TOKEN_LENGTH = 64  # Number of image tokens for 512x512 input
 
     def __init__(self):
         """Initialize VLM manager."""
         self.is_ready = False
         self._lock = threading.Lock()
-        self.process = None
+
+        # Model components
+        self.config = None
+        self.tokenizer = None
+        self.imer = None
+        self.vision_session = None
+        self.embeds = None
+        self.image_processor = None
 
         # Validate paths
-        if not QWEN3_MODEL_DIR.exists():
-            logger.error(f"Qwen3-VL-2B not found at: {QWEN3_MODEL_DIR}")
+        if not FASTVLM_MODEL_DIR.exists():
+            logger.error(f"FastVLM-0.5B not found at: {FASTVLM_MODEL_DIR}")
             return
 
-        axmodel_dir = QWEN3_MODEL_DIR / AXMODEL_SUBDIR
-        if not axmodel_dir.exists():
-            logger.error(f"Model files not found: {axmodel_dir}")
+        if not LLM_MODEL_PATH.exists():
+            logger.error(f"Model files not found: {LLM_MODEL_PATH}")
             return
 
-        logger.info(f"VLM using Qwen3-VL-2B-INT4 at: {QWEN3_MODEL_DIR}")
+        if not VISION_MODEL_PATH.exists():
+            logger.error(f"Vision encoder not found: {VISION_MODEL_PATH}")
+            return
+
+        if not EMBEDS_PATH.exists():
+            logger.error(f"Embeddings not found: {EMBEDS_PATH}")
+            return
+
+        logger.info(f"VLM using FastVLM-0.5B at: {FASTVLM_MODEL_DIR}")
 
     def load_model(self):
-        """Load the model - starts the binary process."""
-        if self.process is not None and self.is_ready:
+        """Load the model - initializes all components."""
+        if self.is_ready:
             logger.info("Model already loaded")
             return True
 
         try:
-            import pexpect
-        except ImportError:
-            logger.info("Installing pexpect...")
-            os.system("pip3 install pexpect --break-system-packages")
-            import pexpect
-
-        try:
-            logger.info("Starting Qwen3-VL-2B-INT4 model (takes ~40s)...")
+            logger.info("Starting FastVLM-0.5B model (takes ~13s)...")
             start_time = time.time()
 
-            cmd = (
-                f"./main_axcl_aarch64_rebuilt "
-                f"--template_filename_axmodel '{AXMODEL_SUBDIR}/qwen3_vl_text_p128_l%d_together.axmodel' "
-                f"--axmodel_num 28 "
-                f"--filename_image_encoder_axmodedl '{AXMODEL_SUBDIR}/Qwen3-VL-2B-Instruct_vision.axmodel' "
-                f"--use_mmap_load_embed 1 "
-                f"--filename_tokenizer_model 'qwen3_tokenizer.txt' "
-                f"--filename_post_axmodel '{AXMODEL_SUBDIR}/qwen3_vl_text_post.axmodel' "
-                f"--filename_tokens_embed '{AXMODEL_SUBDIR}/model.embed_tokens.weight.bfloat16.bin' "
-                f"--tokens_embed_num 151936 "
-                f"--tokens_embed_size 2048 "
-                f"--patch_size 16 "
-                f"--live_print 1 "
-                f"--video 0 "
-                f"--img_width 384 "
-                f"--img_height 384 "
-                f"--vision_start_token_id 151652 "
-                f"--post_config_path post_config.json "
-                f"--devices 0"
-            )
+            # Add utils path to sys.path for imports
+            if str(UTILS_PATH) not in sys.path:
+                sys.path.insert(0, str(UTILS_PATH))
 
-            self.process = pexpect.spawn(
-                '/bin/bash', ['-c', f'cd {QWEN3_MODEL_DIR} && {cmd}'],
-                timeout=180,
-                encoding='utf-8'
-            )
-
-            # Wait for model to load
+            # Import dependencies
             try:
-                self.process.expect(['prompt >>', 'LLM init ok'], timeout=120)
-                load_time = time.time() - start_time
-
-                # Wait for prompt to appear
-                if 'LLM init ok' in self.process.after:
-                    self.process.expect('prompt >>', timeout=30)
-
-                logger.info(f"Qwen3-VL-2B-INT4 loaded in {load_time:.1f}s")
-                self.is_ready = True
-                return True
-
-            except pexpect.TIMEOUT:
-                logger.error("Timeout waiting for model to load")
+                from ml_dtypes import bfloat16
+                import axengine as ax
+                # Suppress torch/transformers logging issues before import
+                os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+                os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+                os.environ['TORCH_LOGS'] = '-all'
+                # Temporarily store and reset root logger to avoid conflicts
+                import logging as _logging
+                _root = _logging.getLogger()
+                _handlers = _root.handlers[:]
+                _level = _root.level
+                for h in _handlers:
+                    _root.removeHandler(h)
+                _root.setLevel(_logging.WARNING)
+                try:
+                    import transformers
+                    transformers.logging.set_verbosity_error()
+                    from transformers import AutoTokenizer, CLIPImageProcessor
+                finally:
+                    # Restore original logging configuration
+                    _root.setLevel(_level)
+                    for h in _handlers:
+                        _root.addHandler(h)
+                from llava_qwen import LlavaConfig, expand2square
+                from infer_func import InferManager
+            except ImportError as e:
+                logger.error(f"Missing dependency: {e}")
+                logger.error("Make sure axengine, transformers, ml_dtypes are installed")
                 return False
-            except pexpect.EOF:
-                logger.error(f"Process ended unexpectedly: {self.process.before}")
-                return False
+
+            # Load config and tokenizer
+            logger.info("  Loading config and tokenizer...")
+            self.config = LlavaConfig.from_pretrained(str(TOKENIZER_PATH))
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                str(TOKENIZER_PATH),
+                trust_remote_code=True
+            )
+
+            # Add special tokens if needed
+            mm_use_im_start_end = getattr(self.config, "mm_use_im_start_end", False)
+            mm_use_im_patch_token = getattr(self.config, "mm_use_im_patch_token", True)
+            if mm_use_im_patch_token:
+                self.tokenizer.add_tokens(["<im_patch>"], special_tokens=True)
+            if mm_use_im_start_end:
+                self.tokenizer.add_tokens(["<im_start>", "<im_end>"], special_tokens=True)
+
+            # Load LLM decoder layers
+            logger.info("  Loading LLM decoder layers...")
+            self.imer = InferManager(
+                self.config,
+                str(LLM_MODEL_PATH),
+                max_seq_len=1024
+            )
+
+            # Load vision encoder
+            logger.info("  Loading vision encoder...")
+            self.vision_session = ax.InferenceSession(str(VISION_MODEL_PATH))
+
+            # Load embeddings - KEEP AS FLOAT32 per IMPLEMENTATION_GUIDE.md
+            logger.info("  Loading embeddings...")
+            self.embeds = np.load(str(EMBEDS_PATH))
+            logger.info(f"    Loaded embeddings: {self.embeds.shape}, dtype: {self.embeds.dtype}")
+
+            # Initialize image processor
+            self.image_processor = CLIPImageProcessor(
+                size={"shortest_edge": self.INPUT_SIZE},
+                crop_size={"height": self.INPUT_SIZE, "width": self.INPUT_SIZE},
+                image_mean=[0, 0, 0],
+                image_std=[1/255, 1/255, 1/255]
+            )
+
+            load_time = time.time() - start_time
+            logger.info(f"FastVLM-0.5B loaded in {load_time:.1f}s")
+            self.is_ready = True
+            return True
 
         except Exception as e:
-            logger.error(f"Failed to load Qwen3-VL-2B: {e}")
+            logger.error(f"Failed to load FastVLM-0.5B: {e}")
             import traceback
-            traceback.print_exc()
+            tb_str = traceback.format_exc()
+            logger.error(f"Traceback:\n{tb_str}")
             return False
+
+    def _reset_kv_cache(self):
+        """Reset KV cache between inferences - CRITICAL for accuracy."""
+        for i in range(self.config.num_hidden_layers):
+            self.imer.k_caches[i].fill(0)
+            self.imer.v_caches[i].fill(0)
+
+    def _encode_image(self, image_path):
+        """Encode image using vision encoder."""
+        # Import here to avoid issues at module load time
+        if str(UTILS_PATH) not in sys.path:
+            sys.path.insert(0, str(UTILS_PATH))
+        from llava_qwen import expand2square
+
+        image = Image.open(image_path).convert('RGB')
+        # Expand to square with black background
+        image = expand2square(image, tuple(int(x*255) for x in self.image_processor.image_mean))
+
+        # Preprocess image
+        input_image = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+        input_image = input_image.unsqueeze(0)
+        input_image = input_image.numpy().astype(np.uint8).transpose((0, 2, 3, 1))
+
+        # Run vision encoder
+        vit_output = self.vision_session.run(None, {"images": input_image})[0]
+        return vit_output
 
     def detect_ad(self, image_path):
         """
@@ -129,91 +222,129 @@ class VLMManager:
         Returns:
             tuple: (is_ad, response_text, elapsed_time)
         """
-        if not self.is_ready or not self.process:
+        if not self.is_ready:
             return False, "VLM not ready", 0
 
         if not os.path.exists(image_path):
             return False, f"Image not found: {image_path}", 0
 
-        # Import pexpect here to avoid issues if not installed
-        import pexpect
+        # Import bfloat16 here
+        from ml_dtypes import bfloat16
 
         with self._lock:
             try:
                 start_time = time.time()
 
-                # Send prompt
-                self.process.sendline(self.AD_PROMPT)
+                # Reset KV cache for fresh inference
+                self._reset_kv_cache()
 
-                # Wait for image prompt
-                try:
-                    self.process.expect(['image >>', 'img >>'], timeout=5)
-                    self.process.sendline(str(image_path))
-                except pexpect.TIMEOUT:
-                    # Model might expect image path right after prompt
-                    self.process.sendline(str(image_path))
+                # Encode image
+                image_features = self._encode_image(image_path)
 
-                # Wait for response and next prompt
-                self.process.expect('prompt >>', timeout=60)
+                # Build prompt - IMAGE FIRST, then question (per IMPLEMENTATION_GUIDE.md)
+                full_prompt = "<|im_start|>system\nYou are a helpful assistant that answers questions accurately and concisely.<|im_end|>\n"
+                full_prompt += "<|im_start|>user\n" + "<image>" * self.TOKEN_LENGTH + "\n"
+                full_prompt += self.AD_PROMPT + "<|im_end|>\n<|im_start|>assistant\n"
 
-                # Extract response from output
-                output = self.process.before
-                response = self._parse_response(output)
+                token_ids = self.tokenizer.encode(full_prompt)
+
+                # Prepare prefill data - use astype() NOT view() per IMPLEMENTATION_GUIDE.md
+                prefill_data = np.take(self.embeds, token_ids, axis=0)
+                prefill_data = prefill_data.astype(bfloat16)
+
+                # Insert image features (convert to bfloat16 to match prefill_data)
+                # Image token ID is 151646
+                image_token_indices = np.where(np.array(token_ids) == 151646)[0]
+                if len(image_token_indices) > 0:
+                    image_start_index = image_token_indices[0]
+                    image_insert_index = image_start_index + 1
+                    prefill_data[image_insert_index:image_insert_index + self.TOKEN_LENGTH] = \
+                        image_features[0, :, :].astype(bfloat16)
+
+                # Get EOS token(s)
+                eos_token_id = None
+                if isinstance(self.config.eos_token_id, list) and len(self.config.eos_token_id) > 1:
+                    eos_token_id = self.config.eos_token_id
+
+                # Run inference
+                slice_len = 128
+                token_ids = self.imer.prefill(
+                    self.tokenizer,
+                    token_ids,
+                    prefill_data,
+                    slice_len=slice_len
+                )
+                response = self.imer.decode(
+                    self.tokenizer,
+                    token_ids,
+                    self.embeds,
+                    slice_len=slice_len,
+                    eos_token_id=eos_token_id,
+                    stream=False
+                )
 
                 elapsed = time.time() - start_time
                 is_ad = self._is_ad_response(response)
 
                 return is_ad, response, elapsed
 
-            except pexpect.TIMEOUT:
-                logger.error(f"VLM timeout on {image_path}")
-                return False, "TIMEOUT", time.time() - start_time
-            except pexpect.EOF:
-                logger.error("VLM process ended unexpectedly")
-                self.is_ready = False
-                return False, "EOF", 0
             except Exception as e:
                 logger.error(f"VLM inference error: {e}")
-                return False, str(e), 0
-
-    def _parse_response(self, output):
-        """Parse the model output to extract Yes/No response."""
-        lines = output.strip().split('\n')
-        for line in lines:
-            line = line.strip()
-            # Skip lines with image path or prompt text
-            if line.startswith('/') or 'advertisement' in line.lower():
-                continue
-            if line.lower().startswith('yes'):
-                return line
-            elif line.lower().startswith('no'):
-                return line
-        return output.strip()[-50:] if output.strip() else ""
+                import traceback
+                traceback.print_exc()
+                return False, str(e), time.time() - start_time
 
     def _is_ad_response(self, response):
-        """Check if VLM response indicates an ad."""
+        """Check if VLM response indicates an ad - STRICT parsing to reduce false positives."""
         r = response.lower().strip()
-        if r.startswith('yes') or r == 'y':
-            return True
+
+        # Check for explicit No first (bias toward not blocking)
         if r.startswith('no') or r == 'n':
             return False
-        # Check for positive indicators
-        if 'yes' in r and 'no' not in r:
+
+        # Check for explicit Yes at start only
+        if r.startswith('yes') or r == 'y':
             return True
+
+        # Check first word only (stricter than first 3 words)
+        first_word = r.split()[0] if r.split() else ''
+        if first_word == 'no' or first_word == 'no,' or first_word == 'no.':
+            return False
+        if first_word == 'yes' or first_word == 'yes,' or first_word == 'yes.':
+            return True
+
+        # Check for explicit negation phrases (these indicate NOT an ad)
+        non_ad_phrases = [
+            'not a commercial', 'not a tv commercial', 'not an ad',
+            'not an advertisement', 'not a video ad', 'no ad',
+            'this is not', 'this is a menu', 'this is a home screen',
+            'this appears to be a menu', 'this appears to be a home',
+            'interface', 'home screen', 'menu screen', 'app interface'
+        ]
+        for phrase in non_ad_phrases:
+            if phrase in r:
+                return False
+
+        # Only mark as ad if explicitly stated as commercial/tv ad
+        ad_phrases = ['tv commercial', 'commercial break', 'video advertisement', 'this is a commercial']
+        for phrase in ad_phrases:
+            if phrase in r:
+                return True
+
+        # Default to NOT an ad if uncertain (conservative - avoid false positives)
         return False
 
     def release(self):
-        """Release resources - stop the model process."""
-        if self.process:
-            try:
-                self.process.sendline('q')
-                self.process.close()
-            except:
-                pass
-            self.process = None
+        """Release resources - clean up model components."""
+        self.config = None
+        self.tokenizer = None
+        self.imer = None
+        self.vision_session = None
+        self.embeds = None
+        self.image_processor = None
         self.is_ready = False
         logger.info("VLM manager released")
 
     def start_tokenizer_service(self):
-        """Compatibility method - Qwen3-VL uses local tokenizer."""
+        """Compatibility method - FastVLM uses transformers tokenizer."""
         return self.load_model()

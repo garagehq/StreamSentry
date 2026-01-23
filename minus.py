@@ -225,12 +225,13 @@ class Minus:
 
         # VLM stability system - sliding window approach to prevent waffling
         # Tracks recent VLM decisions and requires sustained agreement to change state
+        # NOTE: Thresholds increased to reduce false positives with FastVLM-0.5B
         self.vlm_decision_history = []      # List of (timestamp, is_ad) tuples
         self.vlm_history_window = 45.0      # Look at last 45 seconds of decisions
-        self.vlm_min_decisions = 4          # Need at least 4 decisions to act
-        self.vlm_start_agreement = 0.80     # Need 80% ad agreement to START blocking
+        self.vlm_min_decisions = 6          # Need at least 6 decisions to act (was 4)
+        self.vlm_start_agreement = 0.90     # Need 90% ad agreement to START blocking (was 80%)
         self.vlm_stop_agreement = 0.75      # Need 75% no-ad agreement to STOP blocking
-        self.vlm_hysteresis_boost = 0.10    # Extra agreement needed to change current state
+        self.vlm_hysteresis_boost = 0.05    # Extra agreement needed to change current state (was 10%)
 
         # State change rate limiting
         self.vlm_last_state_change = 0      # When VLM state last changed
@@ -241,6 +242,22 @@ class Minus:
         self.vlm_waffle_count = 0           # How many recent flip-flops (used for logging)
         self.vlm_last_state = None          # Last VLM state ('ad' or 'no-ad')
         self.vlm_state_change_time = 0      # When state last changed
+
+        # Home screen detection - suppress ad detection on streaming app interfaces
+        # When OCR detects these keywords, both OCR and VLM ad detection is suppressed
+        # (e.g., "Sponsored" rows on Fire TV home are promotional but not video ads)
+        self.home_screen_keywords = {
+            'home', 'disney+', 'netflix', 'youtube', 'hulu', 'prime video',
+            'amazon', 'settings', 'search', 'library', 'watchlist', 'my stuff',
+            'continue watching', 'recommended', 'trending', 'popular', 'new releases',
+            'categories', 'genres', 'apps', 'channels', 'live tv',
+            # Fire TV specific
+            'try ai art', 'surprise me', 'see more', 'for you', 'free with ads',
+            'recently added', 'top picks', 'movies', 'tv shows'
+        }
+        self.last_ocr_texts = []            # Last OCR detected texts
+        self.home_screen_detected = False   # True if home screen keywords found
+        self.home_screen_detect_time = 0    # When home screen was last detected
 
         # Combined ad detection state
         self.ad_detected = False
@@ -1136,10 +1153,15 @@ class Minus:
                 elif self.vlm_ad_detected:
                     # VLM alone - vlm_ad_detected is now managed by sliding window
                     # which already requires sustained agreement before setting True
-                    should_start = True
-                    source = "vlm"
-                    ad_ratio, _, total = self._get_vlm_agreement()
-                    logger.info(f"VLM triggered alone (agreement: {ad_ratio*100:.0f}% of {total} decisions)")
+                    # BUT suppress if OCR recently detected home screen keywords
+                    if self.home_screen_detected:
+                        ad_ratio, _, total = self._get_vlm_agreement()
+                        logger.info(f"VLM suppressed - home screen detected (OCR cross-validation). Agreement was {ad_ratio*100:.0f}% of {total}")
+                    else:
+                        should_start = True
+                        source = "vlm"
+                        ad_ratio, _, total = self._get_vlm_agreement()
+                        logger.info(f"VLM triggered alone (agreement: {ad_ratio*100:.0f}% of {total} decisions)")
 
                 if should_start:
                     self.ad_detected = True
@@ -1328,6 +1350,17 @@ class Minus:
 
                 ad_detected, matched_keywords, all_texts, is_terminal = self.ocr.check_ad_keywords(ocr_results)
 
+                # Store OCR texts and check for home screen keywords
+                self.last_ocr_texts = all_texts
+                if all_texts:
+                    combined_text = ' '.join(all_texts).lower()
+                    home_keywords_found = [kw for kw in self.home_screen_keywords if kw in combined_text]
+                    if len(home_keywords_found) >= 2:  # Require 2+ keywords to confirm home screen
+                        self.home_screen_detected = True
+                        self.home_screen_detect_time = time.time()
+                    elif time.time() - self.home_screen_detect_time > 5.0:  # Clear after 5s
+                        self.home_screen_detected = False
+
                 # Check for skip opportunity (for Fire TV ad skipping)
                 # Only attempt skip after SKIP_DELAY_SECONDS since ad blocking started
                 is_skippable, skip_text, countdown = check_skip_opportunity(all_texts)
@@ -1380,12 +1413,18 @@ class Minus:
                         self.ad_blocker.set_skip_status(False, None)
 
                 if ad_detected and not is_terminal:
-                    self.ocr_ad_detection_count += 1
-                    self.ocr_no_ad_count = 0
-                    self.last_ocr_ad_time = time.time()
+                    # Suppress OCR ad detection if home screen is detected
+                    # (e.g., "Sponsored" content rows on Fire TV home are not video ads)
+                    if self.home_screen_detected:
+                        keywords_found = [kw for kw, txt in matched_keywords]
+                        logger.info(f"OCR suppressed - home screen detected. Keywords would have been: {keywords_found}")
+                    else:
+                        self.ocr_ad_detection_count += 1
+                        self.ocr_no_ad_count = 0
+                        self.last_ocr_ad_time = time.time()
 
-                    if self.ocr_ad_detection_count >= 1 and not self.ocr_ad_detected:
-                        self.ocr_ad_detected = True
+                        if self.ocr_ad_detection_count >= 1 and not self.ocr_ad_detected:
+                            self.ocr_ad_detected = True
                         keywords_found = [kw for kw, txt in matched_keywords]
                         logger.info(f"OCR detected ad keywords: {keywords_found}")
                         self.screenshot_manager.save_ad_screenshot(frame, matched_keywords, all_texts)
