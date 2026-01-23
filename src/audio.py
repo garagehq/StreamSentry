@@ -54,6 +54,7 @@ class AudioPassthrough:
         # Watchdog state
         self._watchdog_thread = None
         self._stop_watchdog = threading.Event()
+        self._watchdog_paused = False  # Pause watchdog when HDMI is lost
         self._last_buffer_time = 0
         self._restart_count = 0
         self._watchdog_interval = 3.0  # Check every 3 seconds
@@ -239,6 +240,10 @@ class AudioPassthrough:
             if not self.is_running:
                 continue
 
+            # Skip restart attempts if watchdog is paused (e.g., HDMI lost)
+            if self._watchdog_paused:
+                continue
+
             # Check if buffers are flowing
             if self._last_buffer_time > 0:
                 time_since_buffer = time.time() - self._last_buffer_time
@@ -333,6 +338,46 @@ class AudioPassthrough:
                 "restart_count": self._restart_count,
                 "last_buffer_age": time.time() - self._last_buffer_time if self._last_buffer_time > 0 else -1
             }
+
+    def pause_watchdog(self):
+        """Pause the watchdog to prevent restart loops (e.g., when HDMI is lost).
+
+        The pipeline will be stopped but the module remains ready to resume.
+        """
+        with self._lock:
+            self._watchdog_paused = True
+            logger.info("[AudioPassthrough] Watchdog paused - no auto-restart")
+
+            # Stop current pipeline to save resources
+            if self.pipeline:
+                try:
+                    self.pipeline.set_state(Gst.State.NULL)
+                except:
+                    pass
+
+    def resume_watchdog(self):
+        """Resume the watchdog and restart the pipeline.
+
+        Call this when HDMI signal is restored.
+        """
+        with self._lock:
+            self._watchdog_paused = False
+            logger.info("[AudioPassthrough] Watchdog resumed - restarting pipeline")
+
+            # Reset failure counters
+            self._consecutive_failures = 0
+            self._current_restart_delay = self._base_restart_delay
+
+            # Restart pipeline
+            if self.is_running:
+                self._init_pipeline()
+                if self.pipeline:
+                    ret = self.pipeline.set_state(Gst.State.PLAYING)
+                    if ret != Gst.StateChangeReturn.FAILURE:
+                        logger.info("[AudioPassthrough] Pipeline resumed successfully")
+                        self._last_buffer_time = time.time()
+                        if self.is_muted and self.volume:
+                            self.volume.set_property('mute', True)
 
     def stop(self):
         """Stop audio passthrough."""

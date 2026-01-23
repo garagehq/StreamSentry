@@ -470,7 +470,7 @@ class WebUI:
         def api_screenshot_file(subdir, filename):
             """Serve a screenshot file."""
             try:
-                valid_subdirs = ['ads', 'non_ads', 'vlm_spastic', 'static']
+                valid_subdirs = ['ads', 'non_ads', 'vlm_spastic', 'static', 'debug']
                 if subdir not in valid_subdirs:
                     return Response(status=404)
                 # Sanitize filename
@@ -481,6 +481,151 @@ class WebUI:
             except Exception as e:
                 logger.error(f"Error serving screenshot: {e}")
                 return Response(status=404)
+
+        # =========================================================================
+        # Debug Snapshot (Screenshot + Logs)
+        # =========================================================================
+
+        @self.app.route('/api/debug/snapshot', methods=['POST'])
+        def api_debug_snapshot():
+            """Take a debug snapshot (screenshot + last 100 log lines).
+
+            Saves a screenshot and a companion log file with the same timestamp
+            to the screenshots/debug/ directory.
+
+            Returns the paths and log content for immediate display.
+            """
+            try:
+                from datetime import datetime
+
+                # Create debug screenshots directory
+                debug_dir = Path(__file__).parent.parent / 'screenshots' / 'debug'
+                debug_dir.mkdir(parents=True, exist_ok=True)
+
+                # Generate timestamp for filename
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+
+                # Capture snapshot from ustreamer
+                try:
+                    url = f'http://localhost:{self.ustreamer_port}/snapshot'
+                    req = requests.get(url, timeout=5)
+                    if req.status_code == 200:
+                        screenshot_filename = f'debug_{timestamp}.jpg'
+                        screenshot_path = debug_dir / screenshot_filename
+                        screenshot_path.write_bytes(req.content)
+                        logger.info(f"[WebUI] Debug snapshot saved: {screenshot_filename}")
+                    else:
+                        screenshot_filename = None
+                        logger.warning(f"[WebUI] Failed to capture snapshot: HTTP {req.status_code}")
+                except Exception as e:
+                    screenshot_filename = None
+                    logger.warning(f"[WebUI] Failed to capture snapshot: {e}")
+
+                # Read last 100 log lines
+                log_lines = []
+                log_file = Path('/tmp/minus.log')
+                if log_file.exists():
+                    with open(log_file, 'r') as f:
+                        log_lines = [line.rstrip() for line in f.readlines()[-100:]]
+
+                # Save log lines to companion file
+                log_filename = f'debug_{timestamp}.log'
+                log_path = debug_dir / log_filename
+                log_path.write_text('\n'.join(log_lines))
+
+                # Get current status for context
+                status = {}
+                try:
+                    status = self.minus.get_status_dict()
+                except:
+                    pass
+
+                # Save status to companion JSON file
+                import json
+                status_filename = f'debug_{timestamp}.json'
+                status_path = debug_dir / status_filename
+                status_path.write_text(json.dumps(status, indent=2, default=str))
+
+                return jsonify({
+                    'success': True,
+                    'timestamp': timestamp,
+                    'screenshot': f'/api/screenshots/debug/{screenshot_filename}' if screenshot_filename else None,
+                    'log_file': f'/api/screenshots/debug/{log_filename}',
+                    'status_file': f'/api/screenshots/debug/{status_filename}',
+                    'log_lines': log_lines,
+                    'status': status,
+                    'message': f'Debug snapshot saved: {timestamp}'
+                })
+            except Exception as e:
+                logger.error(f"Error taking debug snapshot: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/debug/snapshots')
+        def api_debug_snapshots():
+            """List saved debug snapshots."""
+            try:
+                debug_dir = Path(__file__).parent.parent / 'screenshots' / 'debug'
+
+                if not debug_dir.exists():
+                    return jsonify({'snapshots': []})
+
+                # Find all debug snapshot files (by unique timestamps)
+                timestamps = set()
+                for f in debug_dir.glob('debug_*.jpg'):
+                    # Extract timestamp from filename
+                    ts = f.stem.replace('debug_', '')
+                    timestamps.add(ts)
+                for f in debug_dir.glob('debug_*.log'):
+                    ts = f.stem.replace('debug_', '')
+                    timestamps.add(ts)
+
+                snapshots = []
+                for ts in sorted(timestamps, reverse=True):
+                    snapshot = {'timestamp': ts}
+                    jpg_file = debug_dir / f'debug_{ts}.jpg'
+                    log_file = debug_dir / f'debug_{ts}.log'
+                    json_file = debug_dir / f'debug_{ts}.json'
+
+                    if jpg_file.exists():
+                        snapshot['screenshot'] = f'/api/screenshots/debug/debug_{ts}.jpg'
+                    if log_file.exists():
+                        snapshot['log_file'] = f'/api/screenshots/debug/debug_{ts}.log'
+                    if json_file.exists():
+                        snapshot['status_file'] = f'/api/screenshots/debug/debug_{ts}.json'
+
+                    snapshots.append(snapshot)
+
+                return jsonify({'snapshots': snapshots[:50]})  # Limit to 50 most recent
+            except Exception as e:
+                logger.error(f"Error listing debug snapshots: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/debug/snapshot/<timestamp>', methods=['DELETE'])
+        def api_debug_snapshot_delete(timestamp):
+            """Delete a debug snapshot and its associated files."""
+            try:
+                # Validate timestamp format (prevent path traversal)
+                if not re.match(r'^[\d_]+$', timestamp):
+                    return jsonify({'error': 'Invalid timestamp format'}), 400
+
+                debug_dir = Path(__file__).parent.parent / 'screenshots' / 'debug'
+                deleted = []
+
+                # Delete all files with this timestamp
+                for ext in ['jpg', 'log', 'json']:
+                    file_path = debug_dir / f'debug_{timestamp}.{ext}'
+                    if file_path.exists():
+                        file_path.unlink()
+                        deleted.append(f'debug_{timestamp}.{ext}')
+
+                if deleted:
+                    logger.info(f"[WebUI] Deleted debug snapshot: {timestamp} ({len(deleted)} files)")
+                    return jsonify({'success': True, 'deleted': deleted})
+                else:
+                    return jsonify({'error': 'No files found for this timestamp'}), 404
+            except Exception as e:
+                logger.error(f"Error deleting debug snapshot: {e}")
+                return jsonify({'error': str(e)}), 500
 
         # =========================================================================
         # WiFi Management (nmcli)

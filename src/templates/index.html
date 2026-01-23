@@ -113,6 +113,17 @@
                 </div>
             </section>
 
+            <!-- Debug Snapshot -->
+            <section class="debug-section">
+                <div class="debug-controls">
+                    <span class="debug-label">Debug:</span>
+                    <div class="debug-buttons">
+                        <button onclick="takeDebugSnapshot()" class="debug-btn" id="snapshot-btn">&#128247; Take Snapshot</button>
+                    </div>
+                    <span id="snapshot-status" class="snapshot-status"></span>
+                </div>
+            </section>
+
             <!-- Recent Detections -->
             <section class="detections-section">
                 <h2>Recent Detections</h2>
@@ -183,6 +194,7 @@
                     <button class="tab-btn" onclick="showScreenshotTab('non_ads')">Non-Ads</button>
                     <button class="tab-btn" onclick="showScreenshotTab('vlm_spastic')">VLM Spastic</button>
                     <button class="tab-btn" onclick="showScreenshotTab('static')">Static</button>
+                    <button class="tab-btn debug-tab" onclick="showScreenshotTab('debug')">📷 Debug</button>
                 </div>
                 <div id="screenshots-grid" class="screenshots-grid">
                     <div class="empty-state">Select a tab to load</div>
@@ -193,6 +205,15 @@
                     <button onclick="loadScreenshotsPage(currentScreenshotPage + 1)" id="next-page-btn" class="page-btn">Next &raquo;</button>
                 </div>
                 <div id="screenshots-total" class="screenshots-total"></div>
+            </section>
+
+            <!-- Debug Snapshots Section (shown when debug tab is active) -->
+            <section id="debug-snapshots-section" class="debug-snapshots-section hidden">
+                <h3>Debug Snapshots</h3>
+                <p class="help-text">Each snapshot includes a screenshot, log file, and status JSON for debugging.</p>
+                <div id="debug-snapshots-list" class="debug-snapshots-list">
+                    <div class="empty-state">No debug snapshots</div>
+                </div>
             </section>
         </div>
 
@@ -682,6 +703,52 @@
         }
 
         // =========================================================================
+        // Debug Snapshot
+        // =========================================================================
+
+        async function takeDebugSnapshot() {
+            const btn = document.getElementById('snapshot-btn');
+            const status = document.getElementById('snapshot-status');
+
+            btn.disabled = true;
+            btn.textContent = '⏳ Capturing...';
+            status.textContent = '';
+            status.className = 'snapshot-status';
+
+            try {
+                const response = await fetch('/api/debug/snapshot', { method: 'POST' });
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    btn.textContent = '✓ Saved!';
+                    status.textContent = `Saved: ${data.timestamp}`;
+                    status.className = 'snapshot-status success';
+
+                    // Show a brief notification with the log count
+                    const logCount = data.log_lines ? data.log_lines.length : 0;
+                    console.log(`Debug snapshot saved: ${data.timestamp} (${logCount} log lines)`);
+
+                    setTimeout(() => {
+                        btn.textContent = '📷 Take Snapshot';
+                        btn.disabled = false;
+                    }, 2000);
+                } else {
+                    throw new Error(data.error || 'Snapshot failed');
+                }
+            } catch (error) {
+                console.error('Debug snapshot failed:', error);
+                btn.textContent = '✗ Failed';
+                status.textContent = error.message;
+                status.className = 'snapshot-status error';
+
+                setTimeout(() => {
+                    btn.textContent = '📷 Take Snapshot';
+                    btn.disabled = false;
+                }, 2000);
+            }
+        }
+
+        // =========================================================================
         // Fire TV Remote
         // =========================================================================
 
@@ -841,18 +908,117 @@
         function showScreenshotTab(tab) {
             currentScreenshotTab = tab;
             currentScreenshotPage = 1;
+
             // Map tab names to button text
             const tabToText = {
                 'ads': 'ads',
                 'non_ads': 'non-ads',
                 'vlm_spastic': 'vlm spastic',
-                'static': 'static'
+                'static': 'static',
+                'debug': '📷 debug'
             };
             document.querySelectorAll('.screenshots-section .tab-btn').forEach(btn => {
                 const btnText = btn.textContent.toLowerCase();
                 btn.classList.toggle('active', btnText === tabToText[tab]);
             });
-            loadScreenshots();
+
+            // Show/hide debug section
+            const debugSection = document.getElementById('debug-snapshots-section');
+            const regularGrid = document.getElementById('screenshots-grid');
+            const pagination = document.getElementById('screenshots-pagination');
+
+            if (tab === 'debug') {
+                debugSection.classList.remove('hidden');
+                regularGrid.classList.add('hidden');
+                pagination.classList.add('hidden');
+                loadDebugSnapshots();
+            } else {
+                debugSection.classList.add('hidden');
+                regularGrid.classList.remove('hidden');
+                loadScreenshots();
+            }
+        }
+
+        async function loadDebugSnapshots() {
+            try {
+                const response = await fetch('/api/debug/snapshots');
+                if (!response.ok) return;
+
+                const data = await response.json();
+                const list = document.getElementById('debug-snapshots-list');
+
+                if (data.snapshots && data.snapshots.length > 0) {
+                    list.innerHTML = data.snapshots.map(s => {
+                        const ts = s.timestamp;
+                        // Format timestamp for display (YYYYMMDD_HHMMSS_mmm -> YYYY-MM-DD HH:MM:SS)
+                        const formatted = ts.length >= 15 ?
+                            `${ts.substring(0,4)}-${ts.substring(4,6)}-${ts.substring(6,8)} ${ts.substring(9,11)}:${ts.substring(11,13)}:${ts.substring(13,15)}` :
+                            ts;
+
+                        return `<div class="debug-snapshot-item" data-timestamp="${ts}">
+                            <div class="debug-snapshot-preview">
+                                ${s.screenshot ? `<img src="${s.screenshot}" alt="Debug snapshot" loading="lazy" onclick="window.open('${s.screenshot}', '_blank')">` : '<div class="no-image">No image</div>'}
+                            </div>
+                            <div class="debug-snapshot-info">
+                                <span class="debug-timestamp">${formatted}</span>
+                                <div class="debug-snapshot-links">
+                                    ${s.screenshot ? `<a href="${s.screenshot}" target="_blank">Image</a>` : ''}
+                                    ${s.log_file ? `<a href="${s.log_file}" target="_blank">Logs</a>` : ''}
+                                    ${s.status_file ? `<a href="${s.status_file}" target="_blank">Status</a>` : ''}
+                                </div>
+                            </div>
+                            <div class="debug-snapshot-actions">
+                                <button onclick="viewDebugLogs('${ts}')" class="small-btn">View Logs</button>
+                                <button onclick="deleteDebugSnapshot('${ts}')" class="small-btn danger">Delete</button>
+                            </div>
+                        </div>`;
+                    }).join('');
+                } else {
+                    list.innerHTML = '<div class="empty-state">No debug snapshots. Use the "Take Snapshot" button on the Home tab to capture debug data.</div>';
+                }
+            } catch (error) {
+                console.error('Debug snapshots load failed:', error);
+            }
+        }
+
+        async function viewDebugLogs(timestamp) {
+            try {
+                const response = await fetch(`/api/screenshots/debug/debug_${timestamp}.log`);
+                if (!response.ok) throw new Error('Failed to fetch logs');
+
+                const text = await response.text();
+
+                // Create a modal to show logs
+                const modal = document.createElement('div');
+                modal.className = 'modal';
+                modal.innerHTML = `
+                    <div class="modal-content log-modal">
+                        <h3>Debug Logs - ${timestamp}</h3>
+                        <div class="log-viewer">${escapeHtml(text)}</div>
+                        <div class="modal-buttons">
+                            <button onclick="this.closest('.modal').remove()" class="modal-btn confirm">Close</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            } catch (error) {
+                console.error('View logs failed:', error);
+                alert('Failed to load logs');
+            }
+        }
+
+        async function deleteDebugSnapshot(timestamp) {
+            if (!confirm(`Delete debug snapshot from ${timestamp}?`)) return;
+
+            try {
+                const response = await fetch(`/api/debug/snapshot/${timestamp}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error('Delete failed');
+
+                loadDebugSnapshots();
+            } catch (error) {
+                console.error('Delete debug snapshot failed:', error);
+                alert('Failed to delete snapshot');
+            }
         }
 
         // =========================================================================

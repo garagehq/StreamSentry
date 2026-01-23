@@ -485,6 +485,8 @@ class Minus:
         if self.ad_blocker:
             self.ad_blocker.start_no_signal_mode()
         if self.audio:
+            # Pause watchdog to prevent restart loops (source is unavailable)
+            self.audio.pause_watchdog()
             self.audio.mute()
 
     def _on_hdmi_restored(self):
@@ -514,6 +516,8 @@ class Minus:
                 self.ad_blocker.start()
 
             if self.audio:
+                # Resume watchdog and restart pipeline (source is available again)
+                self.audio.resume_watchdog()
                 self.audio.unmute()
 
             logger.info("[Recovery] HDMI recovery complete")
@@ -631,14 +635,19 @@ class Minus:
 
         # Clear old screenshots beyond minimum
         try:
-            screenshots = sorted(
-                self.screenshot_dir.glob("*.png"),
-                key=lambda p: p.stat().st_mtime
-            )
-            # Keep only last 10 in emergency
-            for old_file in screenshots[:-10]:
-                old_file.unlink()
-                logger.debug(f"[Recovery] Deleted {old_file.name}")
+            if self.screenshot_manager:
+                # Clean up all screenshot subdirectories
+                for subdir in ['ads', 'non_ads', 'vlm_spastic', 'static']:
+                    dir_path = self.screenshot_manager.base_dir / subdir
+                    if dir_path.exists():
+                        screenshots = sorted(
+                            dir_path.glob("*.png"),
+                            key=lambda p: p.stat().st_mtime
+                        )
+                        # Keep only last 10 in emergency
+                        for old_file in screenshots[:-10]:
+                            old_file.unlink()
+                            logger.debug(f"[Recovery] Deleted {old_file.name}")
         except Exception as e:
             logger.error(f"[Recovery] Error cleaning screenshots: {e}")
 
@@ -1529,7 +1538,11 @@ class Minus:
                     self.skip_countdown = countdown
                     self.last_skip_text = skip_text
                     if self.ad_blocker:
-                        self.ad_blocker.set_skip_status(False, f"Skip in {countdown}s")
+                        # 99 = special value meaning "OCR detected 'Skip in' but missed the digit"
+                        if countdown == 99:
+                            self.ad_blocker.set_skip_status(False, "Skip pending...")
+                        else:
+                            self.ad_blocker.set_skip_status(False, f"Skip in {countdown}s")
                 elif is_skippable:
                     self.skip_countdown = 0
                     self.last_skip_countdown = 0
@@ -1569,6 +1582,8 @@ class Minus:
                         self.last_skip_attempt_time = time.time()
 
                         logger.warning(f"[SKIP] >>> Attempting skip (ONE attempt only). Text: '{skip_text}'")
+                        if self.ad_blocker:
+                            self.ad_blocker.set_skip_status(True, "Skipping...")
 
                         if self.try_skip_ad():
                             logger.info(f"[SKIP] Skip command sent! Waiting to see if it worked...")

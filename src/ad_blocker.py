@@ -376,20 +376,25 @@ class DRMAdBlocker:
         The text bounces around the screen like the classic DVD screensaver.
         """
         try:
+            logger.debug("[DRMAdBlocker] Starting no-signal mode...")
+
             # Stop any existing animations
             self._stop_loading_animation()
             self._stop_no_signal_animation()
 
             # Stop existing pipeline if any
             if self.pipeline:
+                logger.debug("[DRMAdBlocker] Stopping existing pipeline for no-signal mode...")
                 try:
                     if self.bus:
                         self.bus.remove_signal_watch()
                         self.bus = None
                     self.pipeline.set_state(Gst.State.NULL)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[DRMAdBlocker] Error stopping pipeline: {e}")
                 self.pipeline = None
+                # Give DRM time to release resources
+                time.sleep(0.3)
 
             # Create a standalone pipeline for no-signal display with positioned text
             # Uses valignment=position and halignment=position to enable xpos/ypos control
@@ -403,8 +408,12 @@ class DRMAdBlocker:
                 f"kmssink plane-id={self.plane_id} connector-id={self.connector_id} sync=false"
             )
 
-            logger.debug("[DRMAdBlocker] Creating no-signal pipeline with bounce animation...")
+            logger.debug(f"[DRMAdBlocker] Creating no-signal pipeline (plane={self.plane_id}, connector={self.connector_id})...")
             self.pipeline = Gst.parse_launch(no_signal_pipeline)
+
+            if not self.pipeline:
+                logger.error("[DRMAdBlocker] Failed to parse no-signal pipeline")
+                return False
 
             self.bus = self.pipeline.get_bus()
             self.bus.add_signal_watch()
@@ -413,9 +422,16 @@ class DRMAdBlocker:
             # Get the textoverlay element for animation
             self._no_signal_textoverlay = self.pipeline.get_by_name('no_signal_text')
 
+            logger.debug("[DRMAdBlocker] Setting no-signal pipeline to PLAYING...")
             ret = self.pipeline.set_state(Gst.State.PLAYING)
             if ret == Gst.StateChangeReturn.FAILURE:
-                logger.error("[DRMAdBlocker] Failed to start no-signal pipeline")
+                logger.error(f"[DRMAdBlocker] Failed to start no-signal pipeline (state change returned FAILURE)")
+                # Clean up failed pipeline
+                try:
+                    self.pipeline.set_state(Gst.State.NULL)
+                except:
+                    pass
+                self.pipeline = None
                 return False
 
             self.is_visible = True
@@ -424,10 +440,12 @@ class DRMAdBlocker:
             # Start the bouncing animation
             self._start_no_signal_animation()
 
-            logger.info("[DRMAdBlocker] No-signal display started")
+            logger.info("[DRMAdBlocker] No-signal display started successfully")
             return True
         except Exception as e:
             logger.error(f"[DRMAdBlocker] Failed to start no-signal mode: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _start_no_signal_animation(self):

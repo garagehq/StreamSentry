@@ -89,7 +89,7 @@ header h1 {
     font-size: 2.5rem;
     font-weight: 400;
     letter-spacing: 0.1em;
-    background: linear-gradient(90deg, #ffffff 0%, #ff6666 50%, #ff0040 100%);
+    background: linear-gradient(90deg, #ff0040 0%, #ff6666 50%, #ffffff 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -98,7 +98,7 @@ header h1 {
 
 header h1 .cursor {
     background: none;
-    -webkit-text-fill-color: var(--accent);
+    -webkit-text-fill-color: #ffffff;
     animation: cursor-blink 1s step-end infinite;
 }
 
@@ -310,18 +310,18 @@ section h2, .firetv-header h2, .apps-section h2, .network-section h2,
 }
 
 /* ==================== CARD HOVER EFFECTS ==================== */
-.status-section, .pause-section, .test-section, .detections-section,
+.status-section, .pause-section, .test-section, .debug-section, .detections-section,
 .vocabulary-section, .firetv-section, .apps-section, .screenshots-section,
 .settings-section, .wifi-section, .network-section, .adb-section,
-.service-section, .logs-section {
+.service-section, .logs-section, .debug-snapshots-section {
     transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-.status-section:hover, .pause-section:hover, .test-section:hover,
+.status-section:hover, .pause-section:hover, .test-section:hover, .debug-section:hover,
 .detections-section:hover, .firetv-section:hover, .apps-section:hover,
 .screenshots-section:hover, .settings-section:hover, .wifi-section:hover,
 .network-section:hover, .adb-section:hover, .service-section:hover,
-.logs-section:hover {
+.logs-section:hover, .debug-snapshots-section:hover {
     border-color: var(--border-highlight);
     box-shadow: 0 0 15px rgba(0, 255, 65, 0.05);
 }
@@ -901,6 +901,226 @@ section h2, .firetv-header h2, .apps-section h2, .network-section h2,
     overflow: hidden;
     white-space: nowrap;
     font-family: var(--font-body);
+}
+
+/* ==================== DEBUG SECTION (Home Tab) ==================== */
+.debug-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.debug-controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.debug-label {
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.debug-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.debug-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--purple);
+    background: transparent;
+    color: var(--purple);
+    font-family: var(--font-display);
+    font-size: 1rem;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.debug-btn:hover:not(:disabled) {
+    background: var(--purple);
+    color: #000;
+}
+
+.debug-btn:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.snapshot-status {
+    font-size: 0.85rem;
+    font-family: var(--font-body);
+}
+
+.snapshot-status.success {
+    color: var(--success);
+}
+
+.snapshot-status.error {
+    color: var(--danger);
+}
+
+/* Debug Tab in Screenshots */
+.tab-btn.debug-tab {
+    border-color: var(--purple);
+    color: var(--purple);
+}
+
+.tab-btn.debug-tab.active {
+    background: var(--purple);
+    color: #000;
+}
+
+/* ==================== DEBUG SNAPSHOTS SECTION ==================== */
+.debug-snapshots-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+.debug-snapshots-section h3 {
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    text-transform: uppercase;
+    color: var(--purple);
+    margin-bottom: 0.5rem;
+}
+
+.debug-snapshots-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.debug-snapshot-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    transition: border-color 0.2s;
+}
+
+.debug-snapshot-item:hover {
+    border-color: var(--purple);
+}
+
+.debug-snapshot-preview {
+    width: 120px;
+    flex-shrink: 0;
+}
+
+.debug-snapshot-preview img {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    cursor: pointer;
+    filter: grayscale(20%);
+    transition: filter 0.2s;
+}
+
+.debug-snapshot-preview img:hover {
+    filter: grayscale(0%);
+}
+
+.debug-snapshot-preview .no-image {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+
+.debug-snapshot-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.debug-timestamp {
+    display: block;
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+}
+
+.debug-snapshot-links {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.debug-snapshot-links a {
+    font-size: 0.75rem;
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.debug-snapshot-links a:hover {
+    text-decoration: underline;
+}
+
+.debug-snapshot-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.small-btn {
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.small-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.small-btn.danger {
+    border-color: var(--danger);
+    color: var(--danger);
+}
+
+.small-btn.danger:hover {
+    background: var(--danger);
+    color: #000;
+}
+
+/* Log Viewer Modal */
+.log-modal {
+    max-width: 90vw;
+    width: 800px;
+}
+
+.log-viewer {
+    background: #000;
+    border: 1px solid var(--border);
+    padding: 0.75rem;
+    max-height: 60vh;
+    overflow-y: auto;
+    font-family: var(--font-body);
+    font-size: 0.7rem;
+    line-height: 1.4;
+    color: var(--accent);
+    white-space: pre-wrap;
+    word-break: break-all;
 }
 
 /* ==================== LOGS SECTION ==================== */

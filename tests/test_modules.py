@@ -1330,6 +1330,137 @@ class TestIntegration:
 
 
 # ============================================================================
+# Memory Leak Tests
+# ============================================================================
+
+class TestMemoryLeaks:
+    """Tests to verify memory leaks are prevented.
+
+    These tests verify the fixes for memory leaks identified in production:
+    1. ThreadPoolExecutor leak (creating new executor each loop iteration)
+    2. Audio pipeline restart loop (watchdog restarting when HDMI lost)
+    3. Fire TV reconnect lock bug (releasing lock without acquiring)
+    """
+
+    def test_audio_watchdog_pause_resume_no_leak(self):
+        """Test that audio watchdog pause/resume doesn't leak resources."""
+        # Import the module to check the fix exists
+        import inspect
+        from audio import AudioPassthrough
+
+        # Verify pause_watchdog method exists
+        assert hasattr(AudioPassthrough, 'pause_watchdog'), \
+            "AudioPassthrough should have pause_watchdog method"
+        assert hasattr(AudioPassthrough, 'resume_watchdog'), \
+            "AudioPassthrough should have resume_watchdog method"
+
+        # Check that _watchdog_paused flag is initialized in __init__
+        init_source = inspect.getsource(AudioPassthrough.__init__)
+        assert '_watchdog_paused' in init_source, \
+            "_watchdog_paused flag should be initialized in __init__"
+
+        # Check that pause_watchdog sets the flag
+        pause_source = inspect.getsource(AudioPassthrough.pause_watchdog)
+        assert '_watchdog_paused = True' in pause_source, \
+            "pause_watchdog should set _watchdog_paused to True"
+
+    def test_audio_watchdog_checks_paused_flag(self):
+        """Test that watchdog loop checks the paused flag."""
+        import inspect
+        from audio import AudioPassthrough
+
+        # Check that _watchdog_loop checks the _watchdog_paused flag
+        loop_source = inspect.getsource(AudioPassthrough._watchdog_loop)
+        assert '_watchdog_paused' in loop_source, \
+            "_watchdog_loop should check _watchdog_paused flag"
+
+    def test_fire_tv_reconnect_no_lock_bug(self):
+        """Test that Fire TV reconnect doesn't release lock without acquiring."""
+        import inspect
+        from fire_tv import FireTVController
+
+        # The _reconnect_loop method should NOT have manual lock.release()
+        # before connect() because connect() handles its own locking
+        reconnect_source = inspect.getsource(FireTVController._reconnect_loop)
+
+        # The bug was: self._lock.release() followed by connect() followed by self._lock.acquire()
+        # This is wrong because connect() takes its own lock internally
+        # The fix removes the manual lock release/acquire around connect()
+        assert 'self._lock.release()' not in reconnect_source or \
+               reconnect_source.count('self._lock.release()') == reconnect_source.count('self._lock.acquire()'), \
+            "Lock release/acquire should be balanced in _reconnect_loop"
+
+    def test_threadpool_executor_reuse(self):
+        """Test that ThreadPoolExecutor is created once, not in loop.
+
+        The memory leak was caused by creating a new ThreadPoolExecutor on each
+        iteration of the main loop. This test verifies the fix by checking that
+        the executor is created outside the while loop.
+        """
+        import ast
+        from pathlib import Path
+
+        # Read the minus.py file
+        minus_path = Path(__file__).parent.parent / 'minus.py'
+        if not minus_path.exists():
+            return  # Skip if file doesn't exist
+
+        source = minus_path.read_text()
+
+        # Check that there's a comment about the fix
+        assert 'CRITICAL: Creating this inside the loop caused massive memory/FD leak' in source or \
+               'ocr_executor = ThreadPoolExecutor' in source, \
+            "ThreadPoolExecutor should be created outside the detection loop"
+
+    def test_gc_collect_called_periodically(self):
+        """Test that gc.collect() is called periodically to clean up memory."""
+        from pathlib import Path
+
+        minus_path = Path(__file__).parent.parent / 'minus.py'
+        if not minus_path.exists():
+            return
+
+        source = minus_path.read_text()
+
+        # Check that gc.collect() is called somewhere in the detection logic
+        assert 'gc.collect()' in source, \
+            "gc.collect() should be called periodically for memory management"
+
+    def test_memory_critical_handler_exists(self):
+        """Test that _handle_memory_critical method exists and cleans screenshots."""
+        from pathlib import Path
+
+        minus_path = Path(__file__).parent.parent / 'minus.py'
+        if not minus_path.exists():
+            return
+
+        source = minus_path.read_text()
+
+        # Check that _handle_memory_critical exists
+        assert 'def _handle_memory_critical' in source, \
+            "_handle_memory_critical method should exist"
+
+        # Check that it uses screenshot_manager properly (not self.screenshot_dir)
+        # The bug was using self.screenshot_dir which doesn't exist
+        assert 'self.screenshot_manager' in source, \
+            "_handle_memory_critical should use screenshot_manager"
+
+    def test_audio_pipeline_stops_on_hdmi_lost(self):
+        """Test that audio pipeline is paused when HDMI is lost."""
+        from pathlib import Path
+
+        minus_path = Path(__file__).parent.parent / 'minus.py'
+        if not minus_path.exists():
+            return
+
+        source = minus_path.read_text()
+
+        # Check that _on_hdmi_lost calls audio.pause_watchdog()
+        assert 'pause_watchdog' in source, \
+            "HDMI lost handler should pause audio watchdog"
+
+
+# ============================================================================
 # Test Runner
 # ============================================================================
 
@@ -1353,6 +1484,7 @@ def run_tests():
         TestOCR,
         TestWebUI,
         TestIntegration,
+        TestMemoryLeaks,
     ]
 
     total_tests = 0

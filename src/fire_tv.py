@@ -647,16 +647,12 @@ class FireTVController:
                 # Try to reconnect
                 if self._ip_address:
                     try:
-                        # Clear old device
+                        # Clear old device (don't need lock - connect() will take it)
                         self._device = None
 
-                        # Reconnect without holding lock (connect() takes lock)
-                        self._lock.release()
-                        try:
-                            if self.connect(self._ip_address):
-                                self._consecutive_failures = 0
-                        finally:
-                            self._lock.acquire()
+                        # connect() takes its own lock internally
+                        if self.connect(self._ip_address):
+                            self._consecutive_failures = 0
                     except Exception as e:
                         logger.error(f"[FireTV] Reconnect failed: {e}")
 
