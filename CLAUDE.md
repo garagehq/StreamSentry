@@ -20,27 +20,11 @@ See **[AESTHETICS.md](AESTHETICS.md)** for the complete visual design guide incl
 ```
 ┌──────────────┐     ┌────────────────────┐     ┌─────────────────────┐
 │   HDMI-RX    │────▶│     ustreamer      │────▶│  GStreamer Pipeline │
-│ /dev/video0  │     │ (MJPEG encoding)   │     │  (input-selector)   │
+│ /dev/video0  │     │ (MJPEG encoding)   │     │  (queue + kmssink)  │
 │  4K@30fps    │     │                    │     │                     │
-│              │     │   :9090/stream     │     │  ┌───────────────┐  │
-│              │     │   :9090/snapshot   │     │  │ Video Input   │  │
-└──────────────┘     └────────┬───────────┘     │  │ (souphttpsrc) │  │
-                              │                 │  └───────┬───────┘  │
-                              │                 │          │ INSTANT  │
-                              │                 │          ▼ SWITCH   │
-                              │                 │  ┌───────────────┐  │
-                              │                 │  │Blocking Input │  │
-                              │                 │  │ (videotestsrc │  │
-                              │                 │  │  + textoverlay│  │
-                              │                 │  │  + Spanish!)  │  │
-                              │                 │  └───────────────┘  │
-                              │                 │          │          │
-                              │                 │          ▼          │
-                              │                 │  ┌───────────────┐  │
-                              │                 │  │    kmssink    │  │
-                              │                 │  │ (auto-detect) │  │
-                              │                 │  └───────────────┘  │
-                              │                 └─────────────────────┘
+│              │     │   :9090/stream     │     │                     │
+│              │     │   :9090/snapshot   │     │                     │
+└──────────────┘     └────────┬───────────┘     └─────────────────────┘
                               │
                               ▼ HTTP snapshot (~150ms, non-blocking)
               ┌───────────────┴───────────────┐
@@ -48,23 +32,23 @@ See **[AESTHETICS.md](AESTHETICS.md)** for the complete visual design guide incl
      ┌────────┴────────┐           ┌──────────┴──────────┐
      │   OCR Worker    │           │    VLM Worker       │
      │  ┌───────────┐  │           │  ┌───────────────┐  │
-     │  │ PaddleOCR │  │           │  │ FastVLM-0.5B  │  │
+     │  │ PaddleOCR │  │           │  │ FastVLM-1.5B  │  │
      │  │ RK3588 NPU│  │           │  │ Axera LLM 8850│  │
-     │  │ ~400ms    │  │           │  │ ~0.6s         │  │
+     │  │ ~400ms    │  │           │  │ ~0.9s         │  │
      │  └───────────┘  │           │  └───────────────┘  │
      └────────┬────────┘           └──────────┬──────────┘
               │                               │
               └───────────────┬───────────────┘
                               │
                      ┌────────┴────────┐
-                     │  input-selector │
-                     │ INSTANT SWITCH! │
+                     │ Blocking Mode   │
+                     │ (ustreamer API) │
                      └─────────────────┘
 ```
 
 **Key Architecture Points:**
-- Single GStreamer pipeline with `input-selector` for instant video/blocking switching
-- No process restart needed - just changes which input is active
+- Simple GStreamer pipeline with `queue max-size-buffers=3 leaky=downstream`
+- All blocking overlay rendering done in ustreamer's MPP encoder at 60fps
 - No X11 required - uses DRM/KMS directly via kmssink
 - **Auto-detects HDMI output, resolution, and DRM plane** at startup
 - Works with both 4K and 1080p displays (uses display's preferred resolution)
@@ -77,7 +61,7 @@ See **[AESTHETICS.md](AESTHETICS.md)** for the complete visual design guide incl
 |------|---------|
 | `minus.py` | Main entry point - orchestrates everything |
 | `minus.spec` | PyInstaller spec for building executable |
-| `src/ad_blocker.py` | GStreamer video pipeline with input-selector |
+| `src/ad_blocker.py` | GStreamer video pipeline, blocking API client |
 | `src/audio.py` | GStreamer audio passthrough with mute control |
 | `src/ocr.py` | PaddleOCR on RKNN NPU, keyword detection |
 | `src/vlm.py` | FastVLM-1.5B on Axera NPU |
@@ -95,7 +79,7 @@ See **[AESTHETICS.md](AESTHETICS.md)** for the complete visual design guide incl
 | `src/screenshots.py` | ScreenshotManager class with deduplication |
 | `src/skip_detection.py` | Skip button detection (regex patterns) |
 | `test_fire_tv.py` | Fire TV controller test and interactive remote |
-| `tests/test_modules.py` | Unit tests for all extracted modules |
+| `tests/test_modules.py` | Unit tests for all extracted modules (106 tests) |
 | `src/templates/index.html` | Web UI single-page app |
 | `src/static/style.css` | Web UI dark theme styles |
 | `install.sh` | Install as systemd service |
@@ -124,8 +108,7 @@ python3 minus.py
 --webui-port 8080         # Web UI port (default: 8080)
 ```
 
-**Auto-detection:**
-At startup, Minus automatically probes the DRM subsystem to detect:
+**Auto-detection at startup:**
 - **Connected HDMI output** - Works with either HDMI-A-1 (connector 215) or HDMI-A-2 (connector 231)
 - **Preferred resolution** - Reads EDID to get the display's preferred mode (e.g., 4K@60Hz or 1080p@60Hz)
 - **NV12-capable overlay plane** - Finds a suitable DRM plane that supports NV12 format for video output
@@ -137,7 +120,7 @@ This allows Minus to work with different displays without manual configuration.
 
 | Metric | Value |
 |--------|-------|
-| Display (video) | **30fps** (GStreamer kmssink, MJPEG → NV12 → plane 72) |
+| Display (video) | **30fps** (GStreamer kmssink, MJPEG → NV12 → DRM plane) |
 | Display (blocking) | **60fps** (ustreamer MPP blocking mode with FreeType) |
 | Preview window | **60fps** (hardware-scaled in MPP encoder) |
 | Blocking composite | **~0.5ms** per frame overhead |
@@ -145,10 +128,12 @@ This allows Minus to work with different displays without manual configuration.
 | ustreamer MJPEG stream | **~60fps** (MPP hardware encoding at 4K) |
 | OCR latency | **100-200ms** capture + **250-400ms** inference |
 | VLM latency | **~0.9s per frame** (FastVLM-1.5B, smarter than 0.5B) |
-| VLM model load | **~13s** (once at startup, 3x faster than Qwen3) |
+| VLM model load | **~13s** (once at startup) |
 | Snapshot capture | **~150ms** (4K JPEG download) |
 | OCR image size | 960x540 (downscaled from 4K for speed) |
 | ustreamer quality | 80% JPEG (MPP encoder) |
+| Animation start | **0.3s** (fast blocking response) |
+| Animation end | **0.25s** (fast unblocking) |
 
 **FPS Tracking:**
 - GStreamer identity element with pad probe counts frames
@@ -172,8 +157,7 @@ Our fork adds NV12→JPEG encoding via Rockchip MPP (Media Process Platform) tha
 achieves ~60fps on 4K input with minimal CPU usage.
 
 **Dynamic Format Detection:**
-Minus automatically probes the V4L2 device to detect its current format
-and resolution. Supported formats:
+Minus automatically probes the V4L2 device to detect its current format and resolution. Supported formats:
 - **NV12** - RK3588 HDMI-RX native (uses MPP hardware encoder)
 - **BGR24/BGR3** - Some HDMI devices (uses standard ustreamer BGR24 support)
 - **YUYV/UYVY** - Webcam-style devices
@@ -236,8 +220,7 @@ audiotestsrc ────┘
 (silent keepalive)
 ```
 
-The `audiotestsrc wave=silence` provides a silent keepalive that prevents pipeline
-stalls when the HDMI source has no audio (between songs, during video silence, etc.).
+The `audiotestsrc wave=silence` provides a silent keepalive that prevents pipeline stalls when the HDMI source has no audio (between songs, during video silence, etc.).
 
 **Mute Control:**
 - `ad_blocker.show()` calls `audio.mute()` - instant mute during ads
@@ -295,6 +278,12 @@ v4l2-ctl -d /dev/video0 --get-ctrl audio_present
 | `vlm_hysteresis_boost` | 10% | Extra agreement needed to change state |
 | `vlm_min_state_duration` | 8s | Cooldown after VLM state change |
 
+**Transition Frame Detection:**
+When blocking is active, black/solid-color frames are detected as transitions between ads and held in blocking state to prevent premature unblocking and re-blocking flicker. The `_is_transition_frame()` method analyzes:
+- Mean brightness < 30 with low std deviation → black screen
+- Low std deviation across frame → solid color
+- >95% pixels within 20 values of median → uniform/static
+
 **Starting Blocking:**
 1. OCR detects ad → blocking starts immediately (unless home screen detected)
 2. VLM detects ad (no OCR) → needs 80%+ agreement in sliding window (4+ decisions)
@@ -317,22 +306,33 @@ v4l2-ctl -d /dev/video0 --get-ctrl audio_present
 **Anti-flicker:**
 - Minimum 3s blocking duration (`MIN_BLOCKING_DURATION`)
 - VLM history cleared on stop prevents false re-triggers
+- Transition frame detection holds blocking through black screens between ads
 
 ## Blocking Overlay
 
 When ads are detected, the screen shows a full blocking overlay **rendered at 60fps via ustreamer's native MPP blocking mode**:
 - **Pixelated Background**: Blurred/pixelated version of the screen from ~6 seconds before the ad
 - **Header**: `BLOCKING (OCR)`, `BLOCKING (VLM)`, or `BLOCKING (OCR+VLM)`
-- **Spanish vocabulary**: Random intermediate-level word with translation (DejaVu Sans Bold)
+- **Spanish vocabulary**: Random intermediate-level word with translation
 - **Example sentence**: Shows the word in context
 - **Rotation**: New vocabulary every 11-15 seconds
 - **Ad Preview Window**: Live preview of the blocked ad in bottom-right corner (60fps!)
-- **Debug Dashboard**: Stats overlay in bottom-left corner (DejaVu Sans Mono)
+- **Debug Dashboard**: Stats overlay in bottom-left corner
+
+**Multi-color Text Per Line:**
+- **Purple** - Spanish word (IBM Plex Mono Bold font)
+- **White** - Header and translation (DejaVu Sans Bold font)
+- **Gray** - Pronunciation and example sentence (DejaVu Sans Bold font)
+
+**Font Configuration:**
+- `FONT_PATH_VOCAB_PRIMARY` = DejaVu Sans Bold (vocabulary text, centered)
+- `FONT_PATH_WORD_PRIMARY` = IBM Plex Mono Bold (Spanish word, purple)
+- `FONT_PATH_STATS_PRIMARY` = IBM Plex Mono Regular (debug stats, monospace)
 
 **Rendering Pipeline:**
 All overlay rendering is done inside ustreamer's MPP encoder, NOT GStreamer:
 1. `ad_blocker.py` captures pre-ad frame and creates pixelated NV12 background
-2. Background uploaded via `POST /blocking/background`
+2. Background uploaded via `POST /blocking/background` (async, non-blocking)
 3. Text and preview configured via `GET /blocking/set`
 4. FreeType renders TrueType fonts directly to NV12 planes at encoder resolution
 5. Composite runs at 60fps with ~0.5ms overhead per frame
@@ -345,6 +345,7 @@ Implementation (`src/ad_blocker.py`):
 - Uses oldest frame when blocking starts (ensures pre-ad content)
 - OpenCV pixelation: downscale by 20x, upscale with INTER_NEAREST
 - Converted to NV12 and uploaded via `/blocking/background` POST API
+- Upload runs in background thread for non-blocking operation
 
 **Preview Window:**
 Unlike the old GStreamer approach (limited to ~4fps), the ustreamer blocking mode provides:
@@ -352,27 +353,7 @@ Unlike the old GStreamer approach (limited to ~4fps), the ustreamer blocking mod
 - Hardware-accelerated scaling in the MPP encoder
 - Automatic resolution handling (works at 1080p, 2K, 4K)
 
-Example display:
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│                        BLOCKING (OCR)                           │
-│                                                                 │
-│                         aprovechar                              │
-│                    = to take advantage of                       │
-│                                                                 │
-│                 Hay que aprovechar el tiempo.                   │
-│                                                                 │
-│                                                     ┌─────────┐ │
-│  Uptime: 2h 15m 30s                                 │ [AD     │ │
-│  Ads blocked: 47                                    │ PREVIEW]│ │
-│  Block time: 12m 45s                                └─────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Web UI Toggles:**
-- Ad Preview Window: toggleable via Settings (default: ON)
-- Debug Dashboard: toggleable via Settings (default: ON)
+**Web UI Toggles:** Ad Preview Window and Debug Dashboard toggleable via Settings (both default ON)
 
 ## Spanish Vocabulary
 
@@ -402,7 +383,7 @@ Example display:
 **FastVLM-1.5B** on Axera LLM 8850 NPU:
 - Smarter than 0.5B with fewer false positives on streaming interfaces
 - **~0.9s** inference time
-- **~47s** model load time (once at startup)
+- **~13s** model load time (once at startup)
 - Uses Python axengine + transformers tokenizer
 - Home screen detection provides additional safety net
 
@@ -446,8 +427,8 @@ git clone https://github.com/garagehq/ustreamer.git /home/radxa/ustreamer-garage
 cd /home/radxa/ustreamer-garagehq && make WITH_MPP=1
 cp ustreamer /home/radxa/ustreamer-patched
 
-# Fonts for blocking overlay (DejaVu recommended)
-sudo apt install -y fonts-dejavu-core
+# Fonts for blocking overlay
+sudo apt install -y fonts-dejavu-core fonts-ibm-plex
 
 # Python dependencies
 pip3 install --break-system-packages \
@@ -459,7 +440,7 @@ pip3 install --break-system-packages \
 **Note:** The `rknnlite` package is provided by Rockchip and may need to be installed from their SDK or a custom repository. On the Radxa board with NPU support, it may already be pre-installed.
 
 **Axera NPU (for VLM):**
-The FastVLM-0.5B model runs on the Axera LLM 8850 NPU. Required Python packages:
+The FastVLM-1.5B model runs on the Axera LLM 8850 NPU. Required Python packages:
 ```bash
 pip3 install --break-system-packages axengine transformers ml_dtypes
 ```
@@ -486,40 +467,6 @@ pkill -9 ustreamer    # Kill orphaned ustreamer
 - Check DRM plane: `modetest -M rockchip -p | grep -A5 "plane\[72\]"`
 - Verify connector: `modetest -M rockchip -c | grep HDMI`
 
-## ustreamer Text Overlay API
-
-Text overlay is rendered directly in ustreamer's MPP encoder before JPEG compression. This avoids GStreamer pipeline modifications and has minimal CPU impact.
-
-**API Endpoints:**
-- `GET /overlay` - Get current overlay configuration
-- `GET /overlay/set?params` - Set overlay configuration
-
-**Parameters:**
-| Parameter | Description |
-|-----------|-------------|
-| `text` | Text to display (URL-encoded, supports newlines) |
-| `enabled` | `true` or `1` to enable overlay |
-| `position` | 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right, 4=center |
-| `scale` | Text scale factor (1-10) |
-| `color_y`, `color_u`, `color_v` | Text color in YUV |
-| `bg_enabled` | Enable background box |
-| `bg_alpha` | Background transparency (0-255) |
-| `clear` | Clear overlay |
-
-**Example Usage:**
-```bash
-# Show overlay
-curl "http://localhost:9090/overlay/set?text=LIVE&position=1&scale=3&enabled=true"
-
-# Clear overlay
-curl "http://localhost:9090/overlay/set?clear=true"
-```
-
-**Implementation:**
-- `ustreamer-garagehq/src/libs/overlay.c` - NV12 text rendering
-- `ustreamer-garagehq/src/libs/overlay.h` - API definitions
-- `src/overlay.py` - Python wrapper for ustreamer overlay API
-
 ## CRITICAL: Blocking Mode Architecture
 
 **NEVER REVERT TO GSTREAMER TEXTOVERLAY FOR BLOCKING OVERLAYS.**
@@ -531,12 +478,10 @@ The blocking overlay system uses ustreamer's native MPP blocking mode (`/blockin
 - All blocking compositing (background, preview, text) done in ustreamer's MPP encoder at 60fps
 - Control via HTTP API: `/blocking/set`, `/blocking/background`
 - FreeType TrueType font rendering:
-  - **DejaVu Sans Bold** for vocabulary text (centered, large - clean and readable)
-  - **IBM Plex Mono** for stats dashboard (bottom-left, monospace)
-- Per-line multi-color text matching web UI aesthetic (see AESTHETICS.md):
-  - Purple for Spanish word
-  - Gray for pronunciation/example
-  - White for header/translation
+  - **IBM Plex Mono Bold** for Spanish word (purple, centered)
+  - **DejaVu Sans Bold** for vocabulary text (white/gray, centered)
+  - **IBM Plex Mono Regular** for stats dashboard (bottom-left, monospace)
+- Per-line multi-color text matching web UI aesthetic (see AESTHETICS.md)
 - Thread-safe with mutex protection for 4 parallel MPP encoder workers
 
 **Resolution Flexibility:**
@@ -562,73 +507,37 @@ FreeType is NOT thread-safe. With 4 parallel MPP encoder workers, a `pthread_mut
 - `ustreamer-garagehq/src/libs/blocking.h` - Blocking mode API
 - `src/ad_blocker.py` - Python client using blocking API
 
-## Known Issues / TODO
+## ustreamer Overlay and Blocking API
 
-### GStreamer Video Path Overlay (Historical - FIXED)
+**Notification Overlay** (for Fire TV setup messages, etc.):
+- `GET /overlay` - Get current overlay configuration
+- `GET /overlay/set?params` - Set overlay configuration
 
-**Previous problem:** Adding a `textoverlay` element to the GStreamer video path caused pipeline stalls every ~12 seconds due to NV12 format incompatibility and 4K→1080p resolution mismatch.
+| Parameter | Description |
+|-----------|-------------|
+| `text` | Text to display (URL-encoded, supports newlines) |
+| `enabled` | `true` or `1` to enable overlay |
+| `position` | 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right, 4=center |
+| `scale` | Text scale factor (1-10) |
+| `color_y`, `color_u`, `color_v` | Text color in YUV |
+| `bg_enabled` | Enable background box |
+| `bg_alpha` | Background transparency (0-255) |
+| `clear` | Clear overlay |
 
-**Solution implemented:** Text overlay is now rendered directly in ustreamer's MPP encoder via the blocking mode API. This:
-- Composites directly on NV12 frames in the encoder
-- Has minimal CPU impact (~0.5ms per frame)
-- Works at any resolution without GStreamer pipeline changes
-- Supports pixelated background, live preview window, and text overlays
-- Uses FreeType for proper TrueType font rendering
-
-### Memory Management
-
-**Issue:** Long-running sessions (several hours) could accumulate memory due to RKNN inference output buffers not being explicitly released.
-
-**Solution implemented:**
-- RKNN inference outputs are now explicitly copied and dereferenced in `src/ocr.py`
-- Periodic `gc.collect()` runs every 100 OCR frames and every 50 VLM frames
-- Health monitor triggers emergency cleanup at 90% memory usage
-- Frame buffers (`prev_frame`, `vlm_prev_frame`) are cleared during memory critical events
-
-**ThreadPoolExecutor fix (Jan 2026):**
-- **CRITICAL:** The OCR worker was creating a new `ThreadPoolExecutor` on every iteration, causing massive file descriptor and memory leaks (~12GB after 12 hours)
-- Fixed by creating a single `ocr_executor` before the loop and reusing it
-- Symptom: "Too many open files" errors, display goes blank, memory exhaustion
-
-**Memory monitoring:**
-- Health monitor checks memory every 5 seconds
-- Warning logged at 80% usage
-- Critical cleanup triggered at 90% usage
-
-### Fire TV Setup
-
-**Status:** Fire TV auto-setup is ENABLED with notification overlays working via ustreamer API.
-
-**Startup timing:**
-- Fire TV setup starts 5 seconds after service start (runs in parallel with VLM loading)
-- Total time from start to connection: ~13 seconds (5s delay + ~8s scan/connect)
-
-**Bug fixed:** Auth retry interval was 3 seconds, causing multiple auth dialogs on the TV before user could respond. Fixed to 35 seconds (longer than AUTH_TIMEOUT of 30s) in `fire_tv_setup.py`.
-
-**Files:**
-- `minus.py:1908` - `_start_fire_tv_setup_delayed(delay_seconds=5.0)`
-- `src/fire_tv_setup.py` - Setup manager with notification overlay via ustreamer API
-- `src/fire_tv.py` - ADB controller
-- `src/overlay.py` - Notification overlay using ustreamer HTTP API
-
-## Color Correction
-
-Color correction is done via GStreamer's `videobalance` element in the pipeline.
-
-**Why not ustreamer/V4L2?**
-The HDMI-RX device doesn't support V4L2 image controls (saturation, contrast, brightness).
-Only read-only controls are available: `audio_sampling_rate`, `audio_present`, `power_present`.
-
-**Current settings (in `src/ad_blocker.py`):**
-```
-videobalance saturation=0.85  # Reduce oversaturation (default 1.0, range 0-2)
+**Example:**
+```bash
+curl "http://localhost:9090/overlay/set?text=LIVE&position=1&scale=3&enabled=true"
+curl "http://localhost:9090/overlay/set?clear=true"
 ```
 
-**To adjust colors:**
-Edit the `videobalance` element in `_init_pipeline()` in `src/ad_blocker.py`:
-- `saturation`: 0.0-2.0 (default 1.0, lower = less saturated)
-- `contrast`: 0.0-2.0 (default 1.0)
-- `brightness`: -1.0 to 1.0 (default 0.0)
+**Blocking Mode** (for ad blocking overlays):
+
+**Blocking Mode Endpoints:**
+- `GET /blocking` - Get current config (enabled, preview, colors, etc.)
+- `GET /blocking/set?enabled=true&text_vocab=...&preview_enabled=true` - Configure
+- `POST /blocking/background` - Upload pixelated NV12 background (width*height*1.5 bytes)
+
+**Multi-color text auto-detection:** Lines starting with `[` → white (header), `(` → gray (pronunciation), `=` → white (translation), `"` → gray (example), other → purple (Spanish word)
 
 ## Health Monitoring
 
@@ -679,50 +588,22 @@ The health monitor (`src/health.py`) runs in a background thread and checks:
 
 ## Web UI
 
-Minus includes a lightweight Flask-based web UI for remote monitoring and control,
-accessible via Tailscale from desktop or mobile devices.
+Minus includes a lightweight Flask-based web UI for remote monitoring and control, accessible via Tailscale from desktop or mobile devices.
 
 **Features:**
 - **Live video feed** - MJPEG stream proxied from ustreamer (CORS bypass)
 - **Status display** - Blocking state, FPS, HDMI info, uptime
 - **Pause controls** - 1/2/5/10 minute presets to pause ad blocking
 - **Detection history** - Recent OCR/VLM detections with timestamps
+- **Settings** - Toggle preview window and debug dashboard
 - **Log viewer** - Collapsible log output for debugging
 
-**Architecture:**
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Web Browser                             │
-│  ┌─────────────────┐  ┌──────────────────────────────────┐  │
-│  │   Live View     │  │         Control Panel            │  │
-│  │ (ustreamer:9090)│  │  - Status (blocking, FPS, etc)   │  │
-│  │                 │  │  - Pause button (1/2/5/10 min)   │  │
-│  │   <img src=     │  │  - Recent detections             │  │
-│  │   /stream>      │  │  - Settings (preview, debug)     │  │
-│  └─────────────────┘  └──────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                              │ HTTP :8080
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    WebUI Server (Flask)                      │
-│  GET /              → Single-page app (index.html)          │
-│  GET /api/status    → JSON status                           │
-│  POST /api/pause/N  → Pause blocking for N minutes          │
-│  POST /api/resume   → Resume blocking immediately           │
-│  GET /api/detections→ Recent OCR/VLM detections             │
-│  GET /api/logs      → Last 100 log lines                    │
-│  GET /api/preview   → Get preview window state              │
-│  POST /api/preview/enable  → Enable ad preview window       │
-│  POST /api/preview/disable → Disable ad preview window      │
-│  GET /api/debug-overlay    → Get debug overlay state        │
-│  POST /api/debug-overlay/enable  → Enable debug dashboard   │
-│  POST /api/debug-overlay/disable → Disable debug dashboard  │
-│  POST /api/test/trigger-block    → Trigger test blocking    │
-│  POST /api/test/stop-block       → Stop test blocking       │
-│  GET /stream        → Proxy to ustreamer:9090/stream        │
-│  GET /snapshot      → Proxy to ustreamer:9090/snapshot      │
-└─────────────────────────────────────────────────────────────┘
-```
+**Key API Routes:**
+- `GET /`, `/api/status`, `/api/detections`, `/api/logs`
+- `POST /api/pause/N`, `/api/resume`
+- `GET/POST /api/preview/*`, `/api/debug-overlay/*`
+- `POST /api/test/trigger-block`, `/api/test/stop-block`
+- `GET /stream`, `/snapshot` - Proxy to ustreamer
 
 **Test API Endpoints:**
 For development and testing ad blocking without waiting for real ads:
@@ -757,45 +638,10 @@ Test mode prevents the detection loop from canceling the blocking, allowing full
 Minus automatically collects training data for future VLM improvements, organized by type:
 
 **Screenshot directories:**
-```
-screenshots/
-├── ads/           # OCR-detected ads (unlimited, for training)
-├── non_ads/       # User paused = false positives (for training)
-├── vlm_spastic/   # VLM uncertainty (detected ad 2-5x then changed mind)
-└── static/        # Static screen suppression (still frames with ad text)
-```
-
-**Ad screenshots** (`screenshots/ads/`):
-- Saved when OCR detects ad keywords
-- Includes matched keywords and all detected text in logs
-- Rate limited: max 1 per 5 seconds with perceptual hash deduplication
-- Unlimited by default (configurable via `--max-screenshots`)
-- Filename format: `ad_YYYYMMDD_HHMMSS_mmm_NNNN.png`
-
-**Non-ad screenshots** (`screenshots/non_ads/`):
-- Saved when user pauses blocking via WebUI
-- Represents content that should NOT be classified as ads
-- User pausing = "this is a false positive, save for training"
-- Filename format: `non_ad_YYYYMMDD_HHMMSS_mmm_NNNN.png`
-
-**VLM spastic screenshots** (`screenshots/vlm_spastic/`):
-- Saved when VLM detects ads 2-5 times then changes its mind
-- Captures potential false positive cases where VLM was uncertain
-- Filename format: `vlm_spastic_Nx_YYYYMMDD_HHMMSS_mmm_NNNN.png`
-
-**Static screenshots** (`screenshots/static/`):
-- Saved when static screen suppression triggers
-- Still/paused frames with ad text that shouldn't trigger blocking
-- Filename format: `static_YYYYMMDD_HHMMSS_mmm_NNNN.png`
-
-**Training workflow:**
-1. Run Minus normally - screenshots are automatically organized by type
-2. When you see a false positive (blocking non-ad content), pause via WebUI
-3. Use collected screenshots to fine-tune VLM:
-   - `screenshots/ads/*.png` → label as "ad"
-   - `screenshots/non_ads/*.png` → label as "not_ad"
-   - `screenshots/vlm_spastic/*.png` → analyze for VLM improvements
-   - `screenshots/static/*.png` → label as "not_ad" (static content)
+- `screenshots/ads/` - OCR-detected ads (rate limited, hash dedup)
+- `screenshots/non_ads/` - User paused = false positives
+- `screenshots/vlm_spastic/` - VLM uncertainty cases (detected 2-5x then changed)
+- `screenshots/static/` - Static screen suppression
 
 ## Fire TV Remote Control
 
@@ -816,118 +662,34 @@ Minus can control Fire TV devices over WiFi via ADB for ad skipping and playback
 - First connection requires approving RSA key on TV screen
 - Both devices must be on the same WiFi network
 
-**Enabling ADB Debugging on Fire TV:**
+**Enabling ADB on Fire TV:** Settings > My Fire TV > Developer Options > ADB Debugging ON (enable Dev Options first via About > click device name 7x)
+
+**Testing:** `python3 test_fire_tv.py [--setup|--interactive|--scan|IP]`
+
+**Commands:** Navigation (up/down/left/right/select/back/home), Media (play/pause), Volume, Power
+
+**Usage:** `quick_connect()` → `skip_ad()` / `go_back()` → `disconnect()`
+
+**Setup States:** `idle` → `scanning` → `waiting_adb_enable` → `waiting_auth` → `connected`
+
+## Color Correction
+
+Color correction is done via GStreamer's `videobalance` element in the pipeline.
+
+**Why not ustreamer/V4L2?**
+The HDMI-RX device doesn't support V4L2 image controls (saturation, contrast, brightness).
+Only read-only controls are available: `audio_sampling_rate`, `audio_present`, `power_present`.
+
+**Current settings (in `src/ad_blocker.py`):**
 ```
-1. Go to Settings (gear icon on home screen)
-2. Select "My Fire TV" (or "Device & Software")
-3. Select "Developer Options"
-   - If you don't see this: go to "About" → click on device name 7 times
-4. Turn ON "ADB Debugging"
-5. Note your IP address from Settings > My Fire TV > About > Network
-```
-
-**Testing:**
-```bash
-# Auto-discover and connect
-python3 test_fire_tv.py
-
-# Guided setup with instructions
-python3 test_fire_tv.py --setup
-
-# Connect to specific IP
-python3 test_fire_tv.py 192.168.1.100
-
-# Interactive remote control
-python3 test_fire_tv.py --interactive
-
-# Just scan for ADB devices
-python3 test_fire_tv.py --scan
+videobalance saturation=0.85  # Reduce oversaturation (default 1.0, range 0-2)
 ```
 
-**Available Commands:**
-| Category | Commands |
-|----------|----------|
-| Navigation | up, down, left, right, select, back, home, menu |
-| Media | play, pause, play_pause, stop, fast_forward, rewind |
-| Volume | volume_up, volume_down, mute |
-| Power | power, sleep, wakeup |
-
-**Usage in Code:**
-```python
-from src.fire_tv import FireTVController, quick_connect
-
-# Auto-discover and connect
-controller = quick_connect()
-
-# Or connect to specific IP
-controller = FireTVController()
-controller.connect("192.168.1.100")
-
-# Send commands
-controller.send_command("select")  # Press OK
-controller.skip_ad()               # Attempt to skip ad
-controller.go_back()               # Press back
-controller.get_current_app()       # Get current app name
-
-# Cleanup
-controller.disconnect()
-```
-
-**Troubleshooting:**
-- No devices found: Enable ADB debugging on Fire TV
-- Connection refused: ADB debugging not enabled or TV is asleep
-- Auth failed: Look at TV screen for authorization dialog
-
-## Fire TV Setup Flow (Integrated with Minus)
-
-When Minus starts, it can automatically set up Fire TV control with visual guidance on the HDMI output.
-
-**Setup Manager (`src/fire_tv_setup.py`):**
-```python
-from src.fire_tv_setup import FireTVSetupManager
-
-# Create manager with ad_blocker for overlays
-setup_manager = FireTVSetupManager(ad_blocker=ad_blocker)
-
-# Start setup (non-blocking)
-setup_manager.start_setup()
-
-# Or blocking until complete
-setup_manager.start_setup(blocking=True)
-
-# Check if connected
-if setup_manager.is_connected():
-    controller = setup_manager.get_controller()
-    controller.skip_ad()
-
-# Skip setup
-setup_manager.skip_setup()
-```
-
-**Setup States:**
-| State | Description |
-|-------|-------------|
-| `idle` | Not doing anything |
-| `scanning` | Scanning network for Fire TV |
-| `waiting_adb_enable` | Showing instructions to enable ADB debugging |
-| `waiting_auth` | Waiting for user to authorize ADB connection |
-| `connected` | Successfully connected |
-| `skipped` | User skipped Fire TV setup |
-
-**Visual Guidance:**
-- **No Fire TV found**: Shows step-by-step instructions to enable ADB debugging
-- **Authorization required**: Shows instructions to press "Allow" on TV
-- **Connected**: Shows success message with device info
-
-**OCR Detection:**
-The setup manager can detect the ADB authorization dialog via OCR by looking for:
-- "Allow USB Debugging"
-- "RSA key fingerprint"
-- "Always allow from this computer"
-
-**Timeouts:**
-- ADB enable scan: 5 minutes (re-scans every 10 seconds)
-- Authorization: 2 minutes (retries every 3 seconds)
+**To adjust colors:**
+Edit the `videobalance` element in `_init_pipeline()` in `src/ad_blocker.py`:
+- `saturation`: 0.0-2.0 (default 1.0, lower = less saturated)
+- `contrast`: 0.0-2.0 (default 1.0)
+- `brightness`: -1.0 to 1.0 (default 0.0)
 
 ## Running as a Service
 
@@ -958,24 +720,22 @@ The service:
 - VLM uses Python axengine for inference (not pexpect/C++ binary)
 - Both NPUs run in parallel without resource contention
 - No X11 required - pure DRM/KMS display
-- Single GStreamer pipeline with input-selector for instant switching
 - Color correction via GStreamer videobalance (not V4L2 controls)
 - Health monitor runs every 5 seconds in background thread
 - VLM frame files use PID-based naming to avoid permission conflicts
 - Snapshots scaled to 960x540 before OCR (model uses 960x960 anyway, smaller = faster)
-- ustreamer quality set to 75% to reduce CPU load
+- ustreamer quality set to 80% for balance of quality and CPU load
 - FPS tracked via GStreamer identity element with pad probe
 - Startup cleanup removes stale frame files and kills orphaned processes
+- Background upload is async to prevent blocking main thread
+- Animation times optimized: 0.3s start, 0.25s end for fast response
+- DYNAMIC_COOLDOWN reduced to 0.5s for faster ad detection
 
 ## Building Executable
 
 ```bash
-# Install PyInstaller
 pip3 install pyinstaller
-
-# Build standalone executable
 pyinstaller minus.spec
-
 # Output: dist/minus
 ```
 
@@ -987,8 +747,7 @@ The project includes a comprehensive test suite for all extracted modules.
 
 **Running Tests:**
 ```bash
-# Run all tests (uses unittest if pytest not installed)
-python3 tests/test_modules.py
+python3 tests/test_modules.py  # 106 tests
 
 # Or with pytest (if installed)
 python3 -m pytest tests/test_modules.py -v
@@ -1009,7 +768,7 @@ python3 -m pytest tests/test_modules.py -v
 | `src/overlay.py` | TestOverlay | NotificationOverlay, positions, show/hide |
 | `src/health.py` | TestHealth | HealthMonitor, HealthStatus, HDMI detection |
 | `src/fire_tv.py` | TestFireTV | Controller, key codes, device detection |
-| `src/vlm.py` | TestVLM | VLMManager, response parsing |
+| `src/vlm.py` | TestVLM | VLMManager, response parsing, 4-tuple returns |
 | `src/ocr.py` | TestOCR | Keywords, exclusions, terminal detection |
 | `src/webui.py` | TestWebUI | Flask routes, API endpoints |
 | Integration | TestIntegration | Cross-module tests |
@@ -1018,7 +777,7 @@ python3 -m pytest tests/test_modules.py -v
 - Tests are self-contained with temporary directories
 - Mock subprocess calls to avoid system dependencies
 - Fallback to manual test runner if pytest not installed
-- All 93 tests should pass on a clean system
+- All 106 tests should pass on a clean system
 
 ## Module Structure
 
@@ -1041,3 +800,46 @@ The codebase has been refactored from monolithic files into smaller, focused mod
 - Better code organization and discoverability
 - Reduced file sizes (minus.py ~1700 lines, ad_blocker.py ~950 lines)
 - Clear separation of concerns
+
+## Known Issues / Fixed
+
+### GStreamer Video Path Overlay (Historical - FIXED)
+
+**Previous problem:** Adding a `textoverlay` element to the GStreamer video path caused pipeline stalls every ~12 seconds due to NV12 format incompatibility and 4K→1080p resolution mismatch.
+
+**Solution implemented:** Text overlay is now rendered directly in ustreamer's MPP encoder via the blocking mode API. This:
+- Composites directly on NV12 frames in the encoder
+- Has minimal CPU impact (~0.5ms per frame)
+- Works at any resolution without GStreamer pipeline changes
+- Supports pixelated background, live preview window, and text overlays
+- Uses FreeType for proper TrueType font rendering
+
+### Memory Management (Fixed)
+
+**Issue:** Long-running sessions (several hours) could accumulate memory due to RKNN inference output buffers not being explicitly released.
+
+**Solution implemented:**
+- RKNN inference outputs are now explicitly copied and dereferenced in `src/ocr.py`
+- Periodic `gc.collect()` runs every 100 OCR frames and every 50 VLM frames
+- Health monitor triggers emergency cleanup at 90% memory usage
+- Frame buffers (`prev_frame`, `vlm_prev_frame`) are cleared during memory critical events
+
+**ThreadPoolExecutor fix (Jan 2026):**
+- **CRITICAL:** The OCR worker was creating a new `ThreadPoolExecutor` on every iteration, causing massive file descriptor and memory leaks (~12GB after 12 hours)
+- Fixed by creating a single `ocr_executor` before the loop and reusing it
+- Symptom: "Too many open files" errors, display goes blank, memory exhaustion
+
+**Memory monitoring:**
+- Health monitor checks memory every 5 seconds
+- Warning logged at 80% usage
+- Critical cleanup triggered at 90% usage
+
+### Fire TV Setup (Fixed)
+
+**Status:** Fire TV auto-setup is ENABLED with notification overlays working via ustreamer API.
+
+**Startup timing:**
+- Fire TV setup starts 5 seconds after service start (runs in parallel with VLM loading)
+- Total time from start to connection: ~13 seconds (5s delay + ~8s scan/connect)
+
+**Bug fixed:** Auth retry interval was 3 seconds, causing multiple auth dialogs on the TV before user could respond. Fixed to 35 seconds (longer than AUTH_TIMEOUT of 30s) in `fire_tv_setup.py`.

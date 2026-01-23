@@ -9,10 +9,11 @@ HDMI passthrough with real-time ML-based ad detection and blocking using dual NP
 
 ## Overview
 
-Minus captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, while running two ML workers concurrently to detect ads. When ads are detected, **instantly** switches to a blocking overlay with Spanish vocabulary practice.
+Minus captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, while running two ML workers concurrently to detect ads. When ads are detected, enables a **60fps blocking overlay** with Spanish vocabulary practice.
 
 **Key features:**
-- **Instant ad blocking** - GStreamer input-selector switches in ~1 frame (no black screen!)
+- **60fps blocking overlay** - Native MPP compositing in ustreamer encoder (not GStreamer)
+- **Fast animations** - 0.3s blocking start, 0.25s unblocking
 - **Audio passthrough** - HDMI audio with instant mute during ads, silent keepalive prevents stalls
 - **Dual NPU inference** - OCR and VLM run concurrently on separate NPUs
 - **Web UI** - Remote monitoring/control via Tailscale (mobile-friendly)
@@ -22,19 +23,18 @@ Minus captures video from HDMI-RX, displays it via GStreamer kmssink at 30fps, w
 - **30fps display** - Smooth passthrough without stutter
 - **Set and forget** - systemd service, health monitoring, automatic recovery
 - **Fire TV control** - Auto-skip ads via ADB remote control (optional)
-- **Text overlay API** - Dynamic on-screen notifications via ustreamer
+- **Transition detection** - Holds blocking through black screens between ads
 
 ```
 ┌──────────────┐     ┌────────────────────┐     ┌─────────────────────┐
 │   HDMI-RX    │────▶│     ustreamer      │────▶│  GStreamer Pipeline │
-│ /dev/video0  │     │ (MJPEG encoding)   │     │  (input-selector)   │
+│ /dev/video0  │     │ (MJPEG + Blocking) │     │  (queue + kmssink)  │
 │  4K@30fps    │     │                    │     │                     │
-│              │     │   :9090/stream     │     │  Video ◄──► Blocking│
-│  Audio ──────┼─────┼────────────────────┼────▶│   INSTANT SWITCH!   │
-│  hw:4,0      │     │   :9090/snapshot   │     │         │           │
-└──────────────┘     └────────┬───────────┘     │    kmssink + audio  │
-                              │                 │   (auto-mute on ad) │
-                              │                 └─────────────────────┘
+│              │     │  :9090/stream      │     │                     │
+│  Audio ──────┼─────┼────────────────────┼────▶│    kmssink + audio  │
+│  hw:4,0      │     │  :9090/snapshot    │     │   (auto-mute on ad) │
+└──────────────┘     │  /blocking/* API   │     └─────────────────────┘
+                     └────────┬───────────┘
                               │
                               ▼ HTTP snapshot (~150ms)
               ┌───────────────┴───────────────┐
@@ -96,15 +96,15 @@ python3 minus.py --check-signal
 
 | Metric | Value |
 |--------|-------|
-| Display framerate | **30fps** (video), 2-3fps (blocking overlay) |
+| Display framerate | **30fps** (video), **60fps** (blocking overlay) |
 | ustreamer stream | **~60fps** (MPP hardware encoding at 4K) |
-| Ad blocking switch | **1.5s animated transition** |
-| Preview window | **~4fps** (live ad preview in corner) |
-| Animation framerate | **~30fps** (smooth ease-in/ease-out) |
+| Ad blocking transition | **0.3s start**, **0.25s end** (fast response) |
+| Preview window | **60fps** (hardware-scaled in MPP encoder) |
+| Blocking composite | **~0.5ms** per frame overhead |
 | Snapshot capture | ~150ms (4K JPEG download) |
-| OCR latency | 250-400ms per frame (960x540 input) |
-| VLM latency | 1.3-1.5s per frame |
-| VLM model load | ~40s (once at startup) |
+| OCR latency | 100-200ms capture + 250-400ms inference |
+| VLM latency | ~0.9s per frame |
+| VLM model load | ~13s (once at startup) |
 | JPEG quality | 80% (MPP hardware encoder) |
 
 **FPS Monitoring:** Output FPS is logged every 60 seconds via health monitor.
@@ -122,10 +122,13 @@ python3 minus.py --check-signal
 - If OCR detected within 5s: VLM is trusted more quickly
 - Stops after 2 consecutive no-ads (when VLM triggered alone)
 
+**Transition Frame Detection:**
+When blocking is active, black/solid-color frames are detected as transitions between ads and held in blocking state to prevent premature unblocking.
+
 **Starting Blocking:**
 | Trigger | Time to block |
 |---------|---------------|
-| OCR detects ad | ~0.7s (immediate) |
+| OCR detects ad | ~0.5s (immediate + 0.3s animation) |
 | VLM alone (no OCR) | ~8s (needs 80% agreement) |
 | VLM with recent OCR | ~2s (trusted) |
 
@@ -141,39 +144,23 @@ python3 minus.py --check-signal
 
 ## Blocking Overlay
 
-When ads are detected, the screen shows:
-- **Pixelated Background**: Blurred/pixelated version of the screen from ~6 seconds before the ad
+When ads are detected, ustreamer's **native MPP blocking mode** renders at 60fps:
+- **Pixelated Background**: 20x downscaled, 60% darkened pre-ad frame
 - **Header**: `BLOCKING (OCR)`, `BLOCKING (VLM)`, or `BLOCKING (OCR+VLM)`
-- **Spanish word**: Random intermediate-level vocabulary
-- **Translation**: English meaning
-- **Example**: Sentence using the word
+- **Spanish word**: Random intermediate-level vocabulary (IBM Plex Mono Bold, purple)
+- **Translation**: English meaning (DejaVu Sans Bold, white)
+- **Example**: Sentence using the word (DejaVu Sans Bold, gray)
 - **Rotation**: New vocabulary every 11-15 seconds
-- **Ad Preview**: Live preview of blocked ad in bottom-right corner (~4fps)
-- **Debug Dashboard**: Stats in bottom-left (uptime, ads blocked, block time)
+- **Ad Preview**: Live 60fps preview in bottom-right corner
+- **Debug Dashboard**: Stats in bottom-left (IBM Plex Mono Regular)
+
+**Multi-color text per line:** Purple for Spanish word, white for header/translation, gray for pronunciation/example - matching the web UI aesthetic.
 
 **Pixelated Background:**
-Instead of a plain black background, the blocking overlay shows a heavily pixelated and darkened version of what was on screen before the ad appeared. This provides visual context while clearly indicating blocking is active. The system maintains a rolling 6-second buffer of snapshots (captured every 2 seconds) and uses the oldest frame when blocking starts.
+Rolling 6-second buffer (3 frames at 2s intervals). Uses oldest frame when blocking starts (ensures pre-ad content). OpenCV pixelation with INTER_NEAREST. Uploaded async via `/blocking/background` POST API.
 
-**Smooth Transitions:**
-- **Start blocking**: 1.5s animation - ad shrinks from full-screen to corner preview
-- **End blocking**: 1.5s animation - preview grows to full-screen, then switches to video
-- Preview updates during animation for responsive feel
-
-Example display:
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        BLOCKING (OCR)                           │
-│                                                                 │
-│                         aprovechar                              │
-│                    = to take advantage of                       │
-│                                                                 │
-│                 Hay que aprovechar el tiempo.                   │
-│                                                     ┌─────────┐ │
-│  Uptime: 2h 15m 30s                                 │   AD    │ │
-│  Ads blocked: 47                                    │ PREVIEW │ │
-│  Block time: 12m 45s                                └─────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-```
+**Transition Frame Detection:**
+Black/solid-color frames are held in blocking state to prevent premature unblocking and re-blocking flicker between ads.
 
 Both preview window and debug dashboard are toggleable via Web UI Settings.
 
@@ -278,13 +265,7 @@ python3 -m pytest tests/test_modules.py -v
 **Test Output:**
 ```
 ============================================================
-Running TestVocabulary
-============================================================
-  PASS: test_vocabulary_has_common_words
-  PASS: test_vocabulary_not_empty
-  ...
-============================================================
-RESULTS: 93/93 passed
+RESULTS: 106/106 passed
 ============================================================
 ```
 
@@ -310,9 +291,9 @@ The VLM uses **FastVLM-1.5B** on the Axera LLM 8850 NPU:
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | Better than 0.5B with fewer false positives |
+| Accuracy | Better than 0.5B with fewer false positives (~36% vs ~88% on home screens) |
 | Inference | ~0.9s per frame |
-| Model load | ~47s (once at startup) |
+| Model load | ~13s (once at startup) |
 | Prompt | "Is this an advertisement? Answer Yes or No." |
 
 Model location:
@@ -532,51 +513,26 @@ curl -X POST http://localhost:8080/api/test/stop-block
 
 Test mode prevents the detection loop from canceling the blocking, allowing you to test the full blocking experience including pixelated background and animations.
 
-## Text Overlay API
+## ustreamer Overlay and Blocking API
 
-Minus includes a text overlay system that renders text directly on the video stream via ustreamer's MPP hardware encoder. This is used for Fire TV setup guidance and can be used for custom notifications.
+ustreamer provides two overlay systems rendered in the MPP encoder:
 
-**API Endpoints:**
-- `GET http://localhost:9090/overlay` - Get current overlay configuration
-- `GET http://localhost:9090/overlay/set?params` - Set overlay configuration
-
-**Parameters:**
-| Parameter | Description |
-|-----------|-------------|
-| `text` | Text to display (URL-encoded, supports newlines with `%0A`) |
-| `enabled` | `true` to enable, `false` to disable |
-| `position` | 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right, 4=center |
-| `scale` | Text scale factor (1-10, default: 3) |
-| `color_y`, `color_u`, `color_v` | Text color in YUV (default: white) |
-| `bg_enabled` | Enable background box (default: true) |
-| `bg_alpha` | Background transparency 0-255 (default: 180) |
-| `clear` | Set to `true` to clear overlay |
-
-**Example Usage:**
+**1. Notification Overlay** (`/overlay/*`) - For Fire TV setup, status messages:
 ```bash
-# Show "LIVE" in top-right corner
 curl "http://localhost:9090/overlay/set?text=LIVE&position=1&scale=4&enabled=true"
-
-# Show multi-line text
-curl "http://localhost:9090/overlay/set?text=Line%201%0ALine%202&position=0&enabled=true"
-
-# Clear overlay
 curl "http://localhost:9090/overlay/set?clear=true"
 ```
 
-**Python Usage:**
-```python
-from src.overlay import NotificationOverlay
+**2. Blocking Mode** (`/blocking/*`) - For ad blocking overlays at 60fps:
+- `GET /blocking` - Get current config
+- `GET /blocking/set?enabled=true&text_vocab=...` - Configure blocking
+- `POST /blocking/background` - Upload pixelated NV12 background
 
-overlay = NotificationOverlay(ustreamer_port=9090)
-overlay.show("Hello World", duration=5.0)  # Auto-hides after 5 seconds
-overlay.hide()  # Manual hide
-```
+**Multi-color text:** Lines auto-detected by prefix - `[` → white (header), `(` → gray (pronunciation), `=` → white (translation), `"` → gray (example), other → purple (Spanish word).
 
-**Performance:**
-- ~0.5ms overhead per frame
-- Rendered directly on NV12 frames before JPEG encoding
-- No GStreamer pipeline modifications needed
+**Thread Safety:** FreeType rendering is mutex-protected for 4 parallel MPP encoder workers.
+
+**Performance:** ~0.5ms overhead per frame, rendered directly on NV12 before JPEG encoding.
 
 ## Housekeeping
 

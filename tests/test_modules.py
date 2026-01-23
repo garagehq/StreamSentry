@@ -847,63 +847,78 @@ class TestFireTV:
 # ============================================================================
 
 class TestVLM:
-    """Tests for vlm.py"""
+    """Tests for vlm.py - FastVLM-1.5B implementation"""
 
     def test_vlm_imports(self):
         """Test that vlm module imports correctly."""
-        from vlm import VLMManager, QWEN3_MODEL_DIR
+        from vlm import VLMManager, FASTVLM_MODEL_DIR
         assert VLMManager is not None
-        assert QWEN3_MODEL_DIR is not None
+        assert FASTVLM_MODEL_DIR is not None
 
     def test_vlm_manager_init(self):
         """Test VLMManager initialization."""
         from vlm import VLMManager
         manager = VLMManager()
         assert manager.is_ready is False
-        assert manager.process is None
+        # FastVLM uses Python axengine, no process attribute
+        assert hasattr(manager, 'is_ready')
+        assert hasattr(manager, '_lock')
 
     def test_vlm_ad_prompt(self):
         """Test VLM ad detection prompt."""
         from vlm import VLMManager
-        assert "advertisement" in VLMManager.AD_PROMPT.lower()
+        assert "advertisement" in VLMManager.AD_PROMPT.lower() or "commercial" in VLMManager.AD_PROMPT.lower()
         assert "yes" in VLMManager.AD_PROMPT.lower() or "no" in VLMManager.AD_PROMPT.lower()
 
     def test_vlm_is_ad_response_yes(self):
-        """Test parsing 'yes' responses."""
+        """Test parsing 'yes' responses - returns (is_ad, confidence) tuple."""
         from vlm import VLMManager
         manager = VLMManager()
-        assert manager._is_ad_response("Yes") is True
-        assert manager._is_ad_response("yes") is True
-        assert manager._is_ad_response("Yes, this is an ad") is True
-        assert manager._is_ad_response("Y") is True
+        # _is_ad_response now returns (is_ad, confidence) tuple
+        is_ad, _ = manager._is_ad_response("Yes")
+        assert is_ad is True
+        is_ad, _ = manager._is_ad_response("yes")
+        assert is_ad is True
+        is_ad, _ = manager._is_ad_response("Yes, this is a tv commercial")
+        assert is_ad is True
+        is_ad, _ = manager._is_ad_response("Y")
+        assert is_ad is True
 
     def test_vlm_is_ad_response_no(self):
-        """Test parsing 'no' responses."""
+        """Test parsing 'no' responses - returns (is_ad, confidence) tuple."""
         from vlm import VLMManager
         manager = VLMManager()
-        assert manager._is_ad_response("No") is False
-        assert manager._is_ad_response("no") is False
-        assert manager._is_ad_response("No, this is not an ad") is False
-        assert manager._is_ad_response("N") is False
+        # _is_ad_response now returns (is_ad, confidence) tuple
+        is_ad, _ = manager._is_ad_response("No")
+        assert is_ad is False
+        is_ad, _ = manager._is_ad_response("no")
+        assert is_ad is False
+        is_ad, _ = manager._is_ad_response("No, this is not an ad")
+        assert is_ad is False
+        is_ad, _ = manager._is_ad_response("N")
+        assert is_ad is False
 
     def test_vlm_detect_ad_not_ready(self):
-        """Test detect_ad when VLM not ready."""
+        """Test detect_ad when VLM not ready - returns 4 values."""
         from vlm import VLMManager
         manager = VLMManager()
         manager.is_ready = False
-        is_ad, response, elapsed = manager.detect_ad("/tmp/test.jpg")
+        # detect_ad returns (is_ad, response, elapsed, confidence)
+        is_ad, response, elapsed, confidence = manager.detect_ad("/tmp/test.jpg")
         assert is_ad is False
         assert "not ready" in response.lower()
+        assert confidence == 0.0
 
     def test_vlm_detect_ad_file_not_found(self):
-        """Test detect_ad with non-existent file."""
+        """Test detect_ad with non-existent file - returns 4 values."""
         from vlm import VLMManager
         manager = VLMManager()
         manager.is_ready = True
-        manager.process = MagicMock()
-        is_ad, response, elapsed = manager.detect_ad("/nonexistent/path.jpg")
+        # detect_ad returns (is_ad, response, elapsed, confidence)
+        is_ad, response, elapsed, confidence = manager.detect_ad("/nonexistent/path.jpg")
         assert is_ad is False
         assert "not found" in response.lower()
+        assert confidence == 0.0
 
 
 # ============================================================================
