@@ -607,6 +607,11 @@ class FireTVController:
         if not self._auto_reconnect:
             return
 
+        # Don't start if already running - prevents thread explosion bug
+        if self._reconnect_thread and self._reconnect_thread.is_alive():
+            logger.debug("[FireTV] Reconnect thread already running, not starting another")
+            return
+
         self._stop_reconnect.clear()
         self._reconnect_thread = threading.Thread(
             target=self._reconnect_loop,
